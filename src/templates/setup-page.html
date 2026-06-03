@@ -13,35 +13,48 @@
             padding: 20px; line-height: 1.6;
         }
         .container {
-            background: #fff; max-width: 560px; width: 100%; border-radius: 16px;
+            background: #fff; max-width: 580px; width: 100%; border-radius: 16px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
         }
         .header {
             background: linear-gradient(135deg, #3498db, #2980b9); color: #fff;
-            text-align: center; padding: 44px 40px;
+            text-align: center; padding: 40px;
         }
         .header.success { background: linear-gradient(135deg, #28a745, #20c997); }
         .header.error { background: linear-gradient(135deg, #e74c3c, #c0392b); }
         .icon {
-            background: rgba(255,255,255,0.2); width: 76px; height: 76px; border-radius: 50%;
+            background: rgba(255,255,255,0.2); width: 72px; height: 72px; border-radius: 50%;
             display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 18px; font-size: 38px;
+            margin: 0 auto 16px; font-size: 36px;
         }
-        .header h1 { font-size: 28px; margin-bottom: 8px; font-weight: 700; }
-        .header p { font-size: 16px; opacity: 0.9; }
-        .content { padding: 36px 40px; }
-        .intro { color: #555; font-size: 15px; margin-bottom: 24px; text-align: center; }
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; color: #333; font-size: 15px; font-weight: 600; margin-bottom: 7px; }
-        .form-group input {
-            width: 100%; padding: 14px; border: 2px solid #e9ecef; border-radius: 12px;
-            font-size: 15px; transition: border-color 0.3s ease;
+        .header h1 { font-size: 26px; margin-bottom: 6px; font-weight: 700; }
+        .header p { font-size: 15px; opacity: 0.92; }
+        .content { padding: 32px 40px; }
+        .intro { color: #555; font-size: 14px; margin-bottom: 20px; text-align: center; }
+        .form-error {
+            display: none; background: #fdecea; border: 1px solid #f5c6cb; color: #b3261e;
+            border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 18px;
         }
-        .form-group input:focus { outline: none; border-color: #667eea; }
-        .form-group input.error { border-color: #e74c3c; }
-        .error-message { color: #e74c3c; font-size: 13px; margin-top: 6px; min-height: 16px; }
+        .form-error.show { display: block; }
+        .form-group { margin-bottom: 18px; }
+        .form-group label { display: block; color: #333; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+        .form-group input, .form-group select {
+            width: 100%; padding: 13px; border: 2px solid #e9ecef; border-radius: 11px;
+            font-size: 15px; transition: border-color 0.2s ease; background: #fff;
+        }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
+        .form-group input.invalid { border-color: #e74c3c; }
+        .error-message { color: #e74c3c; font-size: 13px; margin-top: 5px; min-height: 15px; }
+        .section {
+            border-top: 1px solid #eee; margin-top: 6px; padding-top: 18px;
+        }
+        .section-head { display: flex; align-items: center; justify-content: space-between; }
+        .section-title { font-size: 15px; font-weight: 700; color: #333; }
+        .muted { color: #888; font-size: 12px; font-weight: 500; }
+        .row { display: flex; gap: 12px; }
+        .row > .form-group { flex: 1; }
         .submit-btn {
-            width: 100%; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff;
+            width: 100%; margin-top: 8px; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff;
             border: none; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 600;
             cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;
         }
@@ -55,11 +68,12 @@
         .result-message { text-align: center; }
         .result-message h2 { color: #333; font-size: 22px; margin-bottom: 12px; }
         .result-message p { color: #666; font-size: 15px; }
+        .result-note { color: #b8860b; font-size: 13px; margin-top: 10px; }
         .result-message a {
             display: inline-block; margin-top: 20px; background: linear-gradient(135deg, #667eea, #764ba2);
             color: #fff; text-decoration: none; padding: 12px 26px; border-radius: 12px; font-weight: 600;
         }
-        .footer { background: #f8f9fa; padding: 22px 40px; text-align: center; border-top: 1px solid #e9ecef; }
+        .footer { background: #f8f9fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e9ecef; }
         .copyright { color: #999; font-size: 12px; }
         .hidden { display: none; }
     </style>
@@ -73,8 +87,11 @@
         </div>
 
         <div class="content">
-            <form id="setupForm">
+            <form id="setupForm" novalidate>
                 <p class="intro">This is a one-time setup. The account you create here is the sole administrator.</p>
+
+                <div class="form-error" id="formError" role="alert"></div>
+
                 <div class="form-group">
                     <label for="name">Name</label>
                     <input type="text" id="name" name="name" autocomplete="name" required>
@@ -95,6 +112,64 @@
                     <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required>
                     <div class="error-message" id="confirmError"></div>
                 </div>
+
+                <!-- Optional email/SMTP configuration -->
+                <div class="section">
+                    <div class="section-head">
+                        <span class="section-title">Email</span>
+                        <span class="muted">optional — you can set this later in settings</span>
+                    </div>
+                    <div class="form-group" style="margin-top:12px">
+                        <label for="emailProvider">Provider</label>
+                        <select id="emailProvider">
+                            <option value="none" selected>None</option>
+                            <option value="smtp">SMTP</option>
+                            <option value="resend">Resend</option>
+                        </select>
+                    </div>
+
+                    <div id="smtpFields" class="hidden">
+                        <div class="row">
+                            <div class="form-group">
+                                <label for="smtpHost">SMTP host</label>
+                                <input type="text" id="smtpHost" placeholder="smtp.example.com">
+                            </div>
+                            <div class="form-group" style="max-width:120px">
+                                <label for="smtpPort">Port</label>
+                                <input type="number" id="smtpPort" value="587">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="smtpUser">SMTP user</label>
+                            <input type="text" id="smtpUser" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="smtpPass">SMTP password</label>
+                            <input type="password" id="smtpPass" autocomplete="new-password">
+                        </div>
+                    </div>
+
+                    <div id="resendFields" class="hidden">
+                        <div class="form-group">
+                            <label for="resendKey">Resend API key</label>
+                            <input type="password" id="resendKey" placeholder="re_..." autocomplete="off">
+                        </div>
+                    </div>
+
+                    <div id="fromFields" class="hidden">
+                        <div class="row">
+                            <div class="form-group">
+                                <label for="fromName">From name</label>
+                                <input type="text" id="fromName" placeholder="{{appName}}">
+                            </div>
+                            <div class="form-group">
+                                <label for="fromEmail">From email</label>
+                                <input type="email" id="fromEmail" placeholder="no-reply@example.com">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <button type="submit" class="submit-btn" id="submitBtn">
                     <div class="spinner" id="spinner"></div>
                     <span id="btnText">Finalize setup</span>
@@ -104,6 +179,7 @@
             <div class="result-message hidden" id="resultMessage">
                 <h2 id="resultTitle"></h2>
                 <p id="resultText"></p>
+                <p class="result-note hidden" id="resultNote"></p>
                 <a href="{{dashboardUrl}}" id="resultLink">Go to dashboard</a>
             </div>
         </div>
@@ -117,17 +193,60 @@
         const SETUP_TOKEN = "{{token}}";
         const FORM_ACTION = "{{formAction}}";
 
-        const form = document.getElementById('setupForm');
-        const submitBtn = document.getElementById('submitBtn');
-        const spinner = document.getElementById('spinner');
-        const btnText = document.getElementById('btnText');
-        const header = document.getElementById('header');
-        const icon = document.getElementById('icon');
-        const title = document.getElementById('title');
-        const subtitle = document.getElementById('subtitle');
-        const resultMessage = document.getElementById('resultMessage');
-        const resultTitle = document.getElementById('resultTitle');
-        const resultText = document.getElementById('resultText');
+        const $ = (id) => document.getElementById(id);
+        const form = $('setupForm');
+        const submitBtn = $('submitBtn');
+        const spinner = $('spinner');
+        const btnText = $('btnText');
+        const header = $('header');
+        const icon = $('icon');
+        const title = $('title');
+        const subtitle = $('subtitle');
+        const formError = $('formError');
+        const resultMessage = $('resultMessage');
+        const resultTitle = $('resultTitle');
+        const resultText = $('resultText');
+        const resultNote = $('resultNote');
+
+        const FIELD_ERROR = { name: 'nameError', email: 'emailError', password: 'passwordError', confirmPassword: 'confirmError' };
+
+        // ── Email provider toggle ──
+        const emailProvider = $('emailProvider');
+        function syncProvider() {
+            const p = emailProvider.value;
+            $('smtpFields').classList.toggle('hidden', p !== 'smtp');
+            $('resendFields').classList.toggle('hidden', p !== 'resend');
+            $('fromFields').classList.toggle('hidden', p === 'none');
+        }
+        emailProvider.addEventListener('change', syncProvider);
+
+        // ── Error helpers ──
+        function clearErrors() {
+            formError.classList.remove('show'); formError.textContent = '';
+            Object.values(FIELD_ERROR).forEach((id) => { $(id).textContent = ''; });
+            ['name', 'email', 'password', 'confirmPassword'].forEach((f) => $(f).classList.remove('invalid'));
+        }
+        function setFieldError(field, msg) {
+            const id = FIELD_ERROR[field];
+            if (id) { $(id).textContent = msg; const inp = $(field); if (inp) inp.classList.add('invalid'); return true; }
+            return false;
+        }
+        function showBanner(msg) { formError.textContent = msg; formError.classList.add('show'); formError.scrollIntoView({ block: 'nearest' }); }
+
+        // Map server errors (["path: message", ...]) to fields; rest → banner.
+        function applyServerErrors(data) {
+            const list = Array.isArray(data.errors) ? data.errors : [];
+            const leftover = [];
+            for (const item of list) {
+                const idx = item.indexOf(':');
+                const path = idx >= 0 ? item.slice(0, idx).trim() : '';
+                const msg = idx >= 0 ? item.slice(idx + 1).trim() : item;
+                const top = path.split('.')[0];
+                if (!setFieldError(top, msg)) leftover.push(msg || item);
+            }
+            if (!list.length && data.message) leftover.push(data.message);
+            if (leftover.length) showBanner(leftover.join(' '));
+        }
 
         function validatePassword(p) {
             if (p.length < 8) return 'Password must be at least 8 characters long';
@@ -138,55 +257,103 @@
             return '';
         }
 
+        function buildEmailConfig() {
+            const provider = emailProvider.value;
+            if (provider === 'none') return undefined;
+            const cfg = { provider, from: { name: $('fromName').value.trim(), email: $('fromEmail').value.trim() } };
+            if (provider === 'smtp') {
+                cfg.smtp = {
+                    host: $('smtpHost').value.trim(),
+                    port: Number($('smtpPort').value) || 587,
+                    user: $('smtpUser').value.trim(),
+                    pass: $('smtpPass').value,
+                };
+            } else if (provider === 'resend') {
+                cfg.resendApiKey = $('resendKey').value.trim();
+            }
+            return cfg;
+        }
+
+        function clientValidate() {
+            let ok = true;
+            if (!$('name').value.trim()) { setFieldError('name', 'Name is required'); ok = false; }
+            if (!$('email').value.trim()) { setFieldError('email', 'Email is required'); ok = false; }
+            const pErr = validatePassword($('password').value);
+            if (pErr) { setFieldError('password', pErr); ok = false; }
+            if ($('password').value !== $('confirmPassword').value) { setFieldError('confirmPassword', 'Passwords do not match'); ok = false; }
+            const p = emailProvider.value;
+            if (p === 'smtp' && (!$('smtpHost').value.trim() || !$('smtpUser').value.trim() || !$('smtpPass').value)) {
+                showBanner('SMTP requires host, user, and password (or set the provider to None).'); ok = false;
+            }
+            if (p === 'resend' && !$('resendKey').value.trim()) {
+                showBanner('Resend requires an API key (or set the provider to None).'); ok = false;
+            }
+            return ok;
+        }
+
+        function fail(message) {
+            header.className = 'header error';
+            icon.textContent = '❌';
+            title.textContent = 'Setup failed';
+            subtitle.textContent = 'Please fix the errors below';
+            if (message) showBanner(message);
+            submitBtn.disabled = false; spinner.style.display = 'none'; btnText.textContent = 'Finalize setup';
+        }
+
         form.addEventListener('submit', async function (e) {
             e.preventDefault();
+            clearErrors();
+            if (!clientValidate()) { fail(''); return; }
 
-            const name = document.getElementById('name').value.trim();
-            const email = document.getElementById('email').value.trim();
-            const password = document.getElementById('password').value;
-            const confirmPassword = document.getElementById('confirmPassword').value;
-
-            document.getElementById('nameError').textContent = '';
-            document.getElementById('emailError').textContent = '';
-            document.getElementById('passwordError').textContent = '';
-            document.getElementById('confirmError').textContent = '';
-
-            const pErr = validatePassword(password);
-            if (pErr) { document.getElementById('passwordError').textContent = pErr; return; }
-            if (password !== confirmPassword) {
-                document.getElementById('confirmError').textContent = 'Passwords do not match';
-                return;
-            }
+            const payload = {
+                name: $('name').value.trim(),
+                email: $('email').value.trim(),
+                password: $('password').value,
+                confirmPassword: $('confirmPassword').value,
+                token: SETUP_TOKEN,
+            };
+            const emailConfig = buildEmailConfig();
+            if (emailConfig) payload.emailConfig = emailConfig;
 
             submitBtn.disabled = true; spinner.style.display = 'block'; btnText.textContent = 'Finalizing...';
 
+            let res, data;
             try {
-                const res = await fetch(FORM_ACTION, {
+                res = await fetch(FORM_ACTION, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, email, password, confirmPassword, token: SETUP_TOKEN })
+                    body: JSON.stringify(payload),
                 });
-                const data = await res.json().catch(() => ({}));
-
-                if (res.ok) {
-                    header.classList.add('success');
-                    icon.textContent = '✅';
-                    title.textContent = 'Setup complete!';
-                    subtitle.textContent = 'Your administrator account is ready';
-                    form.classList.add('hidden');
-                    resultMessage.classList.remove('hidden');
-                    resultTitle.textContent = 'All set 🎉';
-                    resultText.textContent = 'You can now sign in to the dashboard with the credentials you just created.';
-                } else {
-                    throw new Error(data.message || 'Setup failed');
-                }
-            } catch (err) {
-                header.className = 'header error';
-                icon.textContent = '❌';
-                title.textContent = 'Setup failed';
-                subtitle.textContent = err.message || 'Something went wrong';
-                submitBtn.disabled = false; spinner.style.display = 'none'; btnText.textContent = 'Finalize setup';
+            } catch (networkErr) {
+                fail('Could not reach the server. Check your connection and try again.');
+                return;
             }
+            try { data = await res.json(); } catch { data = {}; }
+
+            if (res.ok) {
+                header.className = 'header success';
+                icon.textContent = '✅';
+                title.textContent = 'Setup complete!';
+                subtitle.textContent = 'Your administrator account is ready';
+                form.classList.add('hidden');
+                resultMessage.classList.remove('hidden');
+                resultTitle.textContent = 'All set 🎉';
+                resultText.textContent = 'You can now sign in to the dashboard with the credentials you just created.';
+                if (data.emailWarning) {
+                    resultNote.textContent = 'Note: email was not configured — ' + data.emailWarning + ' You can set it later in settings.';
+                    resultNote.classList.remove('hidden');
+                }
+                return;
+            }
+
+            // Error responses
+            if (res.status === 403) { fail(data.message || 'This setup link is invalid or setup is already complete.'); return; }
+            header.className = 'header error';
+            icon.textContent = '❌';
+            title.textContent = 'Setup failed';
+            subtitle.textContent = 'Please fix the errors below';
+            applyServerErrors(data || {});
+            submitBtn.disabled = false; spinner.style.display = 'none'; btnText.textContent = 'Finalize setup';
         });
     </script>
 </body>

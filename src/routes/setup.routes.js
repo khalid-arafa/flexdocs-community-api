@@ -7,6 +7,7 @@ const Logger = require("../utils/logger");
 
 const { registerWithEmailAndPassword } = require("../core/auth_service");
 const { countDocuments } = require("../core/db_service");
+const { saveEmailConfig } = require("../core/config_service");
 const {
   systemDatabaseName,
   systemProjectCode,
@@ -131,7 +132,7 @@ router.post("/setup", authLimiter, zodValidate(setupSchema), async (req, res) =>
         .json({ message: "Setup token is not configured on the server." });
     if (!ok) return res.status(403).json({ message: "Invalid setup token." });
 
-    const { name, email, password } = req.body;
+    const { name, email, password, emailConfig } = req.body;
     await registerWithEmailAndPassword({
       userId: systemDatabaseName,
       projectCode: systemProjectCode,
@@ -141,9 +142,27 @@ router.post("/setup", authLimiter, zodValidate(setupSchema), async (req, res) =>
       roles: ["admin"],
     });
     Logger.info("Admin account created via setup wizard", { email });
-    return res
-      .status(200)
-      .json({ success: true, message: "Administrator account created." });
+
+    // Optional: persist email/SMTP config supplied during setup. Best-effort —
+    // a bad email config must not undo the (already created) admin account.
+    let emailConfigured = false;
+    let emailWarning;
+    if (emailConfig && emailConfig.provider && emailConfig.provider !== "none") {
+      try {
+        await saveEmailConfig(emailConfig);
+        emailConfigured = true;
+      } catch (e) {
+        emailWarning = e.message;
+        Logger.warn("Setup: email config not saved: " + e.message);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Administrator account created.",
+      emailConfigured,
+      ...(emailWarning ? { emailWarning } : {}),
+    });
   } catch (error) {
     Logger.error("POST /setup failed: " + error.message, { stack: error.stack });
     return res.status(400).json({ message: error.message });

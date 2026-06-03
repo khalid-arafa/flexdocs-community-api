@@ -54,8 +54,33 @@ const systemRegisterSchema = z.object({
   password: strongPassword,
 });
 
+// Email/SMTP settings (used by the setup wizard and the settings API).
+// Secret fields are optional; an empty value or the mask keeps the stored one.
+// Provider-specific requirements are enforced in config_service.saveEmailConfig
+// so callers get clear, contextual errors.
+const emailSettingsSchema = z.object({
+  provider: z.enum(["none", "smtp", "resend"]).optional(),
+  smtp: z
+    .object({
+      host: z.string().max(255).optional(),
+      port: z.coerce.number().int().min(1).max(65535).optional(),
+      user: z.string().max(255).optional(),
+      pass: z.string().max(1024).optional(),
+    })
+    .optional(),
+  resendApiKey: z.string().max(1024).optional(),
+  from: z
+    .object({
+      name: z.string().max(100).optional(),
+      email: z.union([z.string().email(), z.literal("")]).optional(),
+    })
+    .optional(),
+  supportEmail: z.union([z.string().email(), z.literal("")]).optional(),
+});
+
 // First-run setup wizard: creates the single admin account. Token is checked
 // in the route handler (not here) so we can return a clear 403 on mismatch.
+// Optional `email` lets the operator configure email during first-run setup.
 const setupSchema = z
   .object({
     name: z.string().min(1, "Name is required").max(100).trim(),
@@ -63,6 +88,7 @@ const setupSchema = z
     password: strongPassword,
     confirmPassword: z.string().min(1, "Password confirmation is required").max(128),
     token: z.string().min(1).max(256).optional(),
+    emailConfig: emailSettingsSchema.optional(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",
@@ -211,6 +237,7 @@ module.exports = {
   systemRegisterSchema,
   systemProfileUpdateSchema,
   setupSchema,
+  emailSettingsSchema,
   // projects
   createProjectSchema,
   createCredentialSchema,

@@ -3,56 +3,10 @@ const nodemailer = require("nodemailer");
 const fs = require("fs").promises;
 const path = require("path");
 const Logger = require("../utils/logger");
+const { getResolvedEmailConfig } = require("./config_service");
 
-let resend;
-let transporter;
-let emailProvider = null; // 'resend', 'nodemailer', or null
-
-// Determine which email provider to use
-const determineProvider = () => {
-  if (emailProvider) return emailProvider;
-
-  if (process.env.RESEND_API_KEY) {
-    emailProvider = "resend";
-    Logger.info("[Email] Using Resend provider");
-  } else if (
-    process.env.SMTP_HOST &&
-    process.env.SMTP_USER &&
-    process.env.SMTP_PASS
-  ) {
-    emailProvider = "nodemailer";
-    Logger.info("[Email] Using Nodemailer provider");
-  } else {
-    Logger.error("[Email] No email provider configured");
-    emailProvider = null;
-  }
-
-  return emailProvider;
-};
-
-// Create Resend instance
-const createResend = () => {
-  if (resend) return resend;
-  resend = new Resend(process.env.RESEND_API_KEY);
-  return resend;
-};
-
-// Create Nodemailer transporter
-const createTransporter = () => {
-  if (transporter) return transporter;
-
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-
-  return transporter;
-};
+// Provider clients are built per-send from the resolved config so runtime
+// changes (via the settings API) take effect without a restart.
 
 // Escape HTML special characters to prevent injection in email templates
 function escapeHtml(str) {
@@ -99,11 +53,11 @@ const loadTemplate = async (templateName, variables = {}) => {
 };
 
 // Send email via Resend
-const sendViaResend = async ({ email, title, htmlContent, textContent }) => {
-  const resendClient = createResend();
+const sendViaResend = async (cfg, { email, title, htmlContent, textContent }) => {
+  const resendClient = new Resend(cfg.resendApiKey);
 
   const emailData = {
-    from: process.env.FROM_EMAIL || "onboarding@resend.dev",
+    from: cfg.from?.email || "onboarding@resend.dev",
     to: email,
     subject: title,
     text: textContent,
@@ -114,17 +68,17 @@ const sendViaResend = async ({ email, title, htmlContent, textContent }) => {
   return { success: true, messageId: result.id, provider: "resend" };
 };
 
-// Send email via Nodemailer
-const sendViaNodemailer = async ({
-  email,
-  title,
-  htmlContent,
-  textContent,
-}) => {
-  const mail = createTransporter();
+// Send email via Nodemailer (SMTP)
+const sendViaNodemailer = async (cfg, { email, title, htmlContent, textContent }) => {
+  const mail = nodemailer.createTransport({
+    host: cfg.smtp.host,
+    port: cfg.smtp.port || 587,
+    secure: (cfg.smtp.port || 587) === 465,
+    auth: { user: cfg.smtp.user, pass: cfg.smtp.pass },
+  });
 
   const emailData = {
-    from: `${process.env.FROM_NAME || "App"} <${process.env.FROM_EMAIL || process.env.SMTP_USER}>`,
+    from: `${cfg.from?.name || "App"} <${cfg.from?.email || cfg.smtp.user}>`,
     to: email,
     subject: title,
     text: textContent,
@@ -132,7 +86,7 @@ const sendViaNodemailer = async ({
   };
 
   const result = await mail.sendMail(emailData);
-  return { success: true, messageId: result.messageId, provider: "nodemailer" };
+  return { success: true, messageId: result.messageId, provider: "smtp" };
 };
 
 // Base email sending function
@@ -158,10 +112,10 @@ const sendEmail = async ({
     return { success: false, error: error.message };
   }
 
-  const provider = determineProvider();
-  if (!provider) {
+  const cfg = await getResolvedEmailConfig();
+  if (!cfg.provider) {
     const error = new Error(
-      "No email provider configured. Set RESEND_API_KEY or SMTP credentials",
+      "No email provider configured. Configure email in settings, or set RESEND_API_KEY / SMTP credentials.",
     );
     Logger.error("[Email] " + error.message);
     return { success: false, error: error.message };
@@ -193,15 +147,10 @@ const sendEmail = async ({
 
     // Send via appropriate provider
     let result;
-    if (provider === "resend") {
-      result = await sendViaResend({ email, title, htmlContent, textContent });
+    if (cfg.provider === "resend") {
+      result = await sendViaResend(cfg, { email, title, htmlContent, textContent });
     } else {
-      result = await sendViaNodemailer({
-        email,
-        title,
-        htmlContent,
-        textContent,
-      });
+      result = await sendViaNodemailer(cfg, { email, title, htmlContent, textContent });
     }
 
     Logger.info(`[Email] Sent via ${result.provider} to ${email} - ID: ${result.messageId}`);
@@ -211,7 +160,7 @@ const sendEmail = async ({
     return {
       success: false,
       error: `Email delivery failed: ${error.message}`,
-      provider,
+      provider: cfg.provider,
     };
   }
 };

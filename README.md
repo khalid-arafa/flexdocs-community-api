@@ -72,6 +72,21 @@ system signup (`POST /register`) does not exist in this edition.
 **Headless alternative:** set `ADMIN_EMAIL` and `ADMIN_PASS` in `.env` and the admin is
 seeded at startup instead (the wizard then reports "already configured").
 
+## Email (SMTP / Resend)
+
+Email is **optional** and configurable at runtime — no restart needed:
+
+- During first-run **/setup**, you can optionally enter SMTP or Resend settings.
+- Later, an admin can view/update them via the API (the dashboard builds the UI):
+  - `GET /settings/email` — current config (secrets masked)
+  - `PUT /settings/email` — update (a secret is only changed when a new value is sent)
+  - `POST /settings/email/test` — send a test email
+- If nothing is stored, the service falls back to env vars (`RESEND_API_KEY` or
+  `SMTP_*` + `FROM_*`).
+
+Stored secrets (SMTP password, Resend key) are **encrypted at rest** with
+`ENCRYPTION_KEY` and never returned by `GET` (shown as `********`).
+
 ## Run with Docker (single container)
 
 This repo ships a `Dockerfile` (dev) and `Dockerfile.prod` (slim). Bring your own MongoDB.

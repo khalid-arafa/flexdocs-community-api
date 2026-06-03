@@ -185,5 +185,6 @@ router.delete("/me", systemApiAuth, async (req, res) => {
 
 router.use("/my/projects", require("./projects.routes"));
 router.use("/admin", require("./admin.routes"));
+router.use("/settings", require("./settings.routes"));
 
 module.exports = router;
