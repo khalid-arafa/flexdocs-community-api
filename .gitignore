@@ -7,9 +7,6 @@
 logs/
 data/
 
-# Web dashboard cloned by setup.sh
-web/
-
 # Local dev scratch scripts (not part of the product)
 testing/
 

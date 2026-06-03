@@ -12,10 +12,4 @@ data
 Dockerfile
 Dockerfile.prod
 src/__tests__
-
-# not part of the API image (api build context is the repo root)
-web
-nginx
-docker-compose.yml
-setup.sh
 README.md
