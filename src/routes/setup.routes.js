@@ -90,16 +90,27 @@ router.get("/setup", async (req, res) => {
     const rawToken = typeof req.query.token === "string" ? req.query.token : "";
     const safeToken = rawToken.replace(/[^A-Za-z0-9+/=_-]/g, "");
 
+    // The page uses one inline <script>. Helmet's default CSP is
+    // `script-src 'self'`, which would block it (and the form would fall back to
+    // a plain GET submit, leaking the password into the URL). Allow just this
+    // script via a per-request nonce.
+    const nonce = crypto.randomBytes(16).toString("base64");
+
     let html = fs.readFileSync(SETUP_TEMPLATE, "utf8");
     const vars = {
       appName: escapeHtml(process.env.APP_NAME || "FlexDocs"),
       token: safeToken,
       formAction: "/setup",
       dashboardUrl: escapeHtml(dashboardUrl()),
+      nonce,
     };
     for (const key of Object.keys(vars)) {
       html = html.replace(new RegExp(`{{${key}}}`, "g"), vars[key]);
     }
+    res.setHeader(
+      "Content-Security-Policy",
+      `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'`,
+    );
     return res.status(200).send(html);
   } catch (error) {
     Logger.error("GET /setup failed: " + error.message, { stack: error.stack });
