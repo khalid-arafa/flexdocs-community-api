@@ -1,0 +1,20 @@
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+logs/
+data/
+
+# Dependencies
+node_modules/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.swp

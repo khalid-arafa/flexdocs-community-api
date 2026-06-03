@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Email Verified Successfully</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .container {
+            background: white;
+            max-width: 600px;
+            width: 100%;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+            animation: slideUp 0.6s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #28a745, #20c997);
+            color: white;
+            text-align: center;
+            padding: 50px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="2" fill="white" opacity="0.1"/></svg>') repeat;
+            animation: float 20s infinite linear;
+        }
+        
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            100% { transform: translateY(-100px); }
+        }
+        
+        .success-icon {
+            background: rgba(255,255,255,0.2);
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px auto;
+            font-size: 40px;
+            animation: bounceIn 0.8s ease-out;
+            position: relative;
+            z-index: 2;
+        }
+        
+        @keyframes bounceIn {
+            0% { transform: scale(0.3); opacity: 0; }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            font-weight: 700;
+            position: relative;
+            z-index: 2;
+        }
+        
+        .header p {
+            font-size: 18px;
+            opacity: 0.9;
+            position: relative;
+            z-index: 2;
+        }
+        
+        .content {
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .welcome-message {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        
+        .welcome-message h2 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        
+        .welcome-message p {
+            color: #666;
+            font-size: 16px;
+            line-height: 1.6;
+        }
+
+        .close {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 20px 40px;
+            cursor: pointer;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .close:hover {
+            background: #c0392b;
+        }
+        
+        .footer {
+            background: #f8f9fa;
+            padding: 30px 40px;
+            text-align: center;
+            border-top: 1px solid #e9ecef;
+        }
+        
+        .footer p {
+            color: #777;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+              
+        .copyright {
+            color: #999;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 12px;
+            }
+            
+            .header {
+                padding: 40px 30px;
+            }
+            
+            .header h1 {
+                font-size: 28px;
+            }
+            
+            .content {
+                padding: 30px 25px;
+            }
+                        
+            .footer {
+                padding: 25px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="success-icon">
+                ✅
+            </div>
+            <h1>Email Verified!</h1>
+            <p>Your account has been successfully activated</p>
+        </div>
+        
+        <!-- Content -->
+        <div class="content">
+            <div class="welcome-message">
+                <h2>Welcome to YourApp! 🎉</h2>
+                <p>Congratulations! Your email address has been verified and your account is now fully activated. You can now access all features and start exploring everything we have to offer.</p>
+            </div>
+            <button class="close" onclick="window.history.back()">Close</button>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <div class="copyright">
+                © All rights reserved.
+            </div>
+        </div>
+    </div>
+</body>
+</html>

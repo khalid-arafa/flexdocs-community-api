@@ -1,0 +1,21 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.*.local
+.git
+.gitignore
+.ignore
+logs
+testing
+data
+Dockerfile
+Dockerfile.prod
+src/__tests__
+
+# not part of the API image (api build context is the repo root)
+web
+nginx
+docker-compose.yml
+setup.sh
+README.md

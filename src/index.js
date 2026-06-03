@@ -1,0 +1,121 @@
+// validate env before anything else
+const { validateEnv } = require("./utils/validate_env");
+validateEnv();
+
+const express = require("express");
+const http = require("http");
+const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
+const validateJsonBody = require("./middleware/validate_json_body.middleware");
+const { DatabaseClient, ensureCriticalIndexes } = require("./core/client");
+const { socket_connection_init } = require("./sockets/io_connect");
+const { dynamicCors } = require("./middleware/cors.middleware");
+const { createAdminUser } = require("./seeds/createAdmin");
+const { errorHandler } = require("./middleware/error_handler.middleware");
+const { apiLimiter } = require("./middleware/rate_limit.middleware");
+const { sanitizeQuery } = require("./middleware/sanitize_query.middleware");
+const { csrfProtection } = require("./middleware/csrf.middleware");
+const { requestId } = require("./middleware/request_id.middleware");
+const Logger = require("./utils/logger");
+
+const { authSockets } = require("./sockets/auth.sockets");
+const { dbSockets } = require("./sockets/db.sockets");
+const { storageSockets } = require("./sockets/storage.sockets");
+
+// init app
+const app = express();
+app.set("trust proxy", 1); // trust first proxy (nginx)
+const server = http.createServer(app);
+
+// create default admin if doesn't exist
+createAdminUser();
+
+// request correlation ID (first middleware — available to all downstream)
+app.use(requestId);
+
+// CORS must run before all other middleware so preflight OPTIONS gets proper headers
+app.use(dynamicCors);
+
+// security headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+}));
+
+app.use(cookieParser());
+app.use(validateJsonBody({ limit: "1mb", extended: true }));
+
+// global middleware
+app.use(apiLimiter);
+app.use(sanitizeQuery);
+app.use(csrfProtection);
+
+const io = socket_connection_init(server);
+
+// health check
+app.get("/health", async (_req, res) => {
+  try {
+    await DatabaseClient.db("admin").command({ ping: 1 });
+    res.status(200).json({ status: "ok", db: "connected" });
+  } catch {
+    res.status(503).json({ status: "error", db: "disconnected" });
+  }
+});
+
+// projects routes for auth and dbs and storage
+const projectsRoutes = require("./routes/routes");
+app.use("/projects", projectsRoutes);
+
+// public routes (verify, reset-password)
+const publicRoutes = require("./routes/public.routes");
+app.use("/", publicRoutes);
+
+// first-run setup wizard (creates the single admin; self-locks once done)
+const setupRoutes = require("./routes/setup.routes");
+app.use("/", setupRoutes);
+
+// users on the system
+const systemRoutes = require("./system/routes");
+app.use("/", systemRoutes);
+
+// sockets
+authSockets(io); // auth sockets
+dbSockets(io); // databases sockets
+storageSockets(io); // storage sockets
+
+// centralized error handler (must be last)
+app.use(errorHandler);
+
+// Start server
+const PORT = process.env.PORT || 3000;
+DatabaseClient.connect().then(async () => {
+  await ensureCriticalIndexes();
+  server.listen(PORT, () => {
+    Logger.info(`Server running on port ${PORT}`);
+  });
+});
+
+// graceful shutdown
+function shutdown(signal) {
+  Logger.info(`${signal} received. Shutting down gracefully...`);
+  server.close(() => {
+    Logger.info("HTTP server closed");
+    io.close(() => {
+      Logger.info("Socket.IO closed");
+      DatabaseClient.close().then(() => {
+        Logger.info("MongoDB connection closed");
+        process.exit(0);
+      });
+    });
+  });
+  // force exit after 30s if drain stalls
+  setTimeout(() => {
+    Logger.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 30000);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("unhandledRejection", (reason) => {
+  Logger.error("Unhandled promise rejection", { error: reason?.message || reason, stack: reason?.stack });
+});

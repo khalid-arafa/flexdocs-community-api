@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Verify Your Email Address</title>
+    <!--[if mso]>
+    <noscript>
+        <xml>
+            <o:OfficeDocumentSettings>
+                <o:PixelsPerInch>96</o:PixelsPerInch>
+            </o:OfficeDocumentSettings>
+        </xml>
+    </noscript>
+    <![endif]-->
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: Arial, sans-serif; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%;">
+    <!-- Wrapper table for better email client support -->
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f4f4f4;">
+        <tr>
+            <td align="center" style="padding: 40px 20px;">
+                <!-- Main container -->
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="max-width: 600px; width: 100%; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                    <!-- Header -->
+                    <tr>
+                        <td style="padding: 40px 40px 20px 40px; text-align: center; border-bottom: 1px solid #e6e6e6;">
+                            <div style="display: inline-block; padding: 12px 20px; background-color: #28a745; border-radius: 50px; margin-bottom: 20px;">
+                                <span style="font-size: 24px; color: #ffffff;">✉️</span>
+                            </div>
+                            <h1 style="margin: 0; font-size: 28px; font-weight: bold; color: #333333; line-height: 1.3;">Welcome to {{appName}}!</h1>
+                            <p style="margin: 15px 0 0 0; font-size: 16px; color: #777777; line-height: 1.4;">Please verify your email address to get started</p>
+                        </td>
+                    </tr>
+                    
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 30px 40px;">
+                            <p style="margin: 0 0 20px 0; font-size: 16px; line-height: 1.6; color: #555555;">
+                                Hello there! 👋
+                            </p>
+                            
+                            <p style="margin: 0 0 20px 0; font-size: 16px; line-height: 1.6; color: #555555;">
+                                Thank you for signing up for <strong>{{appName}}</strong>! We're excited to have you on board.
+                            </p>
+                            
+                            <p style="margin: 0 0 30px 0; font-size: 16px; line-height: 1.6; color: #555555;">
+                                To complete your registration and activate your account (<strong>{{email}}</strong>), please verify your email address by clicking the button below:
+                            </p>
+                            
+                            <!-- CTA Button -->
+                            <div style="text-align: center; margin: 35px 0;">
+                                <a href="{{verificationLink}}" 
+                                   style="display: inline-block; background-color: #28a745; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 16px; padding: 16px 32px; border-radius: 6px; border: none; cursor: pointer; transition: background-color 0.3s ease;"
+                                   onmouseover="this.style.backgroundColor='#218838'"
+                                   onmouseout="this.style.backgroundColor='#28a745'">
+                                    Verify My Email Address
+                                </a>
+                            </div>
+                            
+                            <!-- Alternative link for email clients that don't support buttons -->
+                            <p style="margin: 30px 0 20px 0; font-size: 14px; line-height: 1.5; color: #777777; text-align: center;">
+                                If the button doesn't work, copy and paste this link into your browser:
+                                <br>
+                                <a href="{{verificationLink}}" style="color: #28a745; text-decoration: underline; word-break: break-all;">{{verificationLink}}</a>
+                            </p>
+                            
+                            <!-- Benefits section -->
+                            <div style="background-color: #f8f9fa; border-radius: 8px; padding: 25px; margin: 30px 0;">
+                                <h3 style="margin: 0 0 15px 0; font-size: 18px; font-weight: bold; color: #333333; text-align: center;">
+                                    What's next after verification?
+                                </h3>
+                                <ul style="margin: 0; padding-left: 0; list-style: none;">
+                                    <li style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.5; color: #555555; padding-left: 25px; position: relative;">
+                                        <span style="position: absolute; left: 0; color: #28a745; font-weight: bold;">✓</span>
+                                        Access your personalized dashboard
+                                    </li>
+                                    <li style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.5; color: #555555; padding-left: 25px; position: relative;">
+                                        <span style="position: absolute; left: 0; color: #28a745; font-weight: bold;">✓</span>
+                                        Receive important account notifications
+                                    </li>
+                                    <li style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.5; color: #555555; padding-left: 25px; position: relative;">
+                                        <span style="position: absolute; left: 0; color: #28a745; font-weight: bold;">✓</span>
+                                        Explore all available features
+                                    </li>
+                                    <li style="margin: 0; font-size: 14px; line-height: 1.5; color: #555555; padding-left: 25px; position: relative;">
+                                        <span style="position: absolute; left: 0; color: #28a745; font-weight: bold;">✓</span>
+                                        Connect with our community
+                                    </li>
+                                </ul>
+                            </div>
+                            
+                            <!-- Important notice -->
+                            <div style="background-color: #e3f2fd; border: 1px solid #bbdefb; border-radius: 6px; padding: 20px; margin: 30px 0;">
+                                <p style="margin: 0 0 10px 0; font-size: 14px; line-height: 1.5; color: #1565c0;">
+                                    <strong>📍 Important:</strong>
+                                </p>
+                                <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #1565c0;">
+                                    This verification link will expire soon for security reasons. If you didn't create an account with {{appName}}, you can safely ignore this email.
+                                </p>
+                            </div>
+                            
+                            <p style="margin: 20px 0 0 0; font-size: 16px; line-height: 1.6; color: #555555;">
+                                We're here to help if you have any questions or need assistance getting started!
+                            </p>
+                        </td>
+                    </tr>
+                    
+                    <!-- Footer -->
+                    <tr>
+                        <td style="padding: 30px 40px; background-color: #f8f9fa; border-top: 1px solid #e6e6e6; border-radius: 0 0 8px 8px;">
+                            <p style="margin: 0 0 15px 0; font-size: 14px; line-height: 1.5; color: #777777; text-align: center;">
+                                Having trouble? We're here to help! 
+                                <a href="mailto:{{supportEmail}}" style="color: #28a745; text-decoration: none;">Contact Support</a>
+                            </p>
+                            
+                            <div style="text-align: center; margin: 20px 0 15px 0;">
+                                <a href="#" style="display: inline-block; margin: 0 10px; color: #777777; text-decoration: none; font-size: 12px;">Privacy Policy</a>
+                                <span style="color: #cccccc;">|</span>
+                                <a href="#" style="display: inline-block; margin: 0 10px; color: #777777; text-decoration: none; font-size: 12px;">Terms of Service</a>
+                                <span style="color: #cccccc;">|</span>
+                                <a href="#" style="display: inline-block; margin: 0 10px; color: #777777; text-decoration: none; font-size: 12px;">Unsubscribe</a>
+                            </div>
+                            
+                            <p style="margin: 0; font-size: 12px; line-height: 1.4; color: #999999; text-align: center;">
+                                You received this email because you signed up for {{appName}}.
+                                <br><br>
+                                © 2024 {{appName}}. All rights reserved.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

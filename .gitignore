@@ -1,0 +1,26 @@
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+logs/
+data/
+
+# Web dashboard cloned by setup.sh
+web/
+
+# Local dev scratch scripts (not part of the product)
+testing/
+
+# Dependencies
+node_modules/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.swp

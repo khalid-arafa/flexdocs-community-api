@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{appName}} — First-run Setup</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            padding: 20px; line-height: 1.6;
+        }
+        .container {
+            background: #fff; max-width: 560px; width: 100%; border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #3498db, #2980b9); color: #fff;
+            text-align: center; padding: 44px 40px;
+        }
+        .header.success { background: linear-gradient(135deg, #28a745, #20c997); }
+        .header.error { background: linear-gradient(135deg, #e74c3c, #c0392b); }
+        .icon {
+            background: rgba(255,255,255,0.2); width: 76px; height: 76px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 18px; font-size: 38px;
+        }
+        .header h1 { font-size: 28px; margin-bottom: 8px; font-weight: 700; }
+        .header p { font-size: 16px; opacity: 0.9; }
+        .content { padding: 36px 40px; }
+        .intro { color: #555; font-size: 15px; margin-bottom: 24px; text-align: center; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; color: #333; font-size: 15px; font-weight: 600; margin-bottom: 7px; }
+        .form-group input {
+            width: 100%; padding: 14px; border: 2px solid #e9ecef; border-radius: 12px;
+            font-size: 15px; transition: border-color 0.3s ease;
+        }
+        .form-group input:focus { outline: none; border-color: #667eea; }
+        .form-group input.error { border-color: #e74c3c; }
+        .error-message { color: #e74c3c; font-size: 13px; margin-top: 6px; min-height: 16px; }
+        .submit-btn {
+            width: 100%; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff;
+            border: none; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 600;
+            cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;
+        }
+        .submit-btn:hover:not(:disabled) { opacity: 0.92; }
+        .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .spinner {
+            width: 20px; height: 20px; border: 2px solid transparent; border-top: 2px solid #fff;
+            border-radius: 50%; animation: spin 1s linear infinite; display: none;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .result-message { text-align: center; }
+        .result-message h2 { color: #333; font-size: 22px; margin-bottom: 12px; }
+        .result-message p { color: #666; font-size: 15px; }
+        .result-message a {
+            display: inline-block; margin-top: 20px; background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff; text-decoration: none; padding: 12px 26px; border-radius: 12px; font-weight: 600;
+        }
+        .footer { background: #f8f9fa; padding: 22px 40px; text-align: center; border-top: 1px solid #e9ecef; }
+        .copyright { color: #999; font-size: 12px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header" id="header">
+            <div class="icon" id="icon">⚙️</div>
+            <h1 id="title">Welcome to {{appName}}</h1>
+            <p id="subtitle">Create your administrator account</p>
+        </div>
+
+        <div class="content">
+            <form id="setupForm">
+                <p class="intro">This is a one-time setup. The account you create here is the sole administrator.</p>
+                <div class="form-group">
+                    <label for="name">Name</label>
+                    <input type="text" id="name" name="name" autocomplete="name" required>
+                    <div class="error-message" id="nameError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" autocomplete="username" required>
+                    <div class="error-message" id="emailError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" autocomplete="new-password" required>
+                    <div class="error-message" id="passwordError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="confirmPassword">Confirm Password</label>
+                    <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required>
+                    <div class="error-message" id="confirmError"></div>
+                </div>
+                <button type="submit" class="submit-btn" id="submitBtn">
+                    <div class="spinner" id="spinner"></div>
+                    <span id="btnText">Create admin account</span>
+                </button>
+            </form>
+
+            <div class="result-message hidden" id="resultMessage">
+                <h2 id="resultTitle"></h2>
+                <p id="resultText"></p>
+                <a href="{{dashboardUrl}}" id="resultLink">Go to dashboard</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="copyright">© All rights reserved.</div>
+        </div>
+    </div>
+
+    <script>
+        const SETUP_TOKEN = "{{token}}";
+        const FORM_ACTION = "{{formAction}}";
+
+        const form = document.getElementById('setupForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const spinner = document.getElementById('spinner');
+        const btnText = document.getElementById('btnText');
+        const header = document.getElementById('header');
+        const icon = document.getElementById('icon');
+        const title = document.getElementById('title');
+        const subtitle = document.getElementById('subtitle');
+        const resultMessage = document.getElementById('resultMessage');
+        const resultTitle = document.getElementById('resultTitle');
+        const resultText = document.getElementById('resultText');
+
+        function validatePassword(p) {
+            if (p.length < 8) return 'Password must be at least 8 characters long';
+            if (!/[A-Z]/.test(p)) return 'Password must contain an uppercase letter';
+            if (!/[a-z]/.test(p)) return 'Password must contain a lowercase letter';
+            if (!/\d/.test(p)) return 'Password must contain a number';
+            if (!/[\W_]/.test(p)) return 'Password must contain a symbol';
+            return '';
+        }
+
+        form.addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const name = document.getElementById('name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            document.getElementById('nameError').textContent = '';
+            document.getElementById('emailError').textContent = '';
+            document.getElementById('passwordError').textContent = '';
+            document.getElementById('confirmError').textContent = '';
+
+            const pErr = validatePassword(password);
+            if (pErr) { document.getElementById('passwordError').textContent = pErr; return; }
+            if (password !== confirmPassword) {
+                document.getElementById('confirmError').textContent = 'Passwords do not match';
+                return;
+            }
+
+            submitBtn.disabled = true; spinner.style.display = 'block'; btnText.textContent = 'Creating...';
+
+            try {
+                const res = await fetch(FORM_ACTION, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password, confirmPassword, token: SETUP_TOKEN })
+                });
+                const data = await res.json().catch(() => ({}));
+
+                if (res.ok) {
+                    header.classList.add('success');
+                    icon.textContent = '✅';
+                    title.textContent = 'Setup complete!';
+                    subtitle.textContent = 'Your administrator account is ready';
+                    form.classList.add('hidden');
+                    resultMessage.classList.remove('hidden');
+                    resultTitle.textContent = 'All set 🎉';
+                    resultText.textContent = 'You can now sign in to the dashboard with the credentials you just created.';
+                } else {
+                    throw new Error(data.message || 'Setup failed');
+                }
+            } catch (err) {
+                header.className = 'header error';
+                icon.textContent = '❌';
+                title.textContent = 'Setup failed';
+                subtitle.textContent = err.message || 'Something went wrong';
+                submitBtn.disabled = false; spinner.style.display = 'none'; btnText.textContent = 'Create admin account';
+            }
+        });
+    </script>
+</body>
+</html>
