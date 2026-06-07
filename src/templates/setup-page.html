@@ -5,122 +5,357 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{appName}} — First-run Setup</title>
     <style>
+        /* ── FlexDocs dashboard design system ───────────────────────── */
+        :root {
+            --indigo:   #6366F1;
+            --violet:   #8B5CF6;
+            --accent:   #A5B4FC;
+            --navy:     #0F172A;
+            --navy-2:   #364a79;
+            --card:     #FFFFFF;
+            --text:     #0F172A;
+            --text-2:   #475569;
+            --muted:    #94A3B8;
+            --border:   #E2E8F0;
+            --line:     #EEF1F6;
+            --ring:     rgba(99,102,241,.30);
+            --grad:      linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+            --grad-navy: linear-gradient(135deg, #364a79 0%, #0F172A 55%, #364a79 100%);
+            --grad-ok:   linear-gradient(135deg, #16a34a 0%, #10b981 100%);
+            --grad-err:  linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
+            --radius:    12px;
+            --radius-lg: 24px;
+            --shadow-card: 0 10px 30px rgba(15,23,42,.08);
+            --shadow-lg:   0 28px 70px -18px rgba(15,23,42,.35);
+            --font: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh; display: flex; align-items: center; justify-content: center;
-            padding: 20px; line-height: 1.6;
-        }
-        .container {
-            background: #fff; max-width: 580px; width: 100%; border-radius: 16px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #3498db, #2980b9); color: #fff;
-            text-align: center; padding: 40px;
-        }
-        .header.success { background: linear-gradient(135deg, #28a745, #20c997); }
-        .header.error { background: linear-gradient(135deg, #e74c3c, #c0392b); }
-        .icon {
-            background: rgba(255,255,255,0.2); width: 72px; height: 72px; border-radius: 50%;
+            font-family: var(--font);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
             display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 16px; font-size: 36px;
+            padding: 24px;
+            background:
+                radial-gradient(900px 520px at 10% -12%, rgba(99,102,241,.14), transparent 60%),
+                radial-gradient(820px 520px at 112% 0%, rgba(139,92,246,.13), transparent 55%),
+                linear-gradient(135deg, #F7F8FC 0%, #EEF1F8 100%);
+            background-attachment: fixed;
         }
-        .header h1 { font-size: 26px; margin-bottom: 6px; font-weight: 700; }
-        .header p { font-size: 15px; opacity: 0.92; }
-        .content { padding: 32px 40px; }
-        .intro { color: #555; font-size: 14px; margin-bottom: 20px; text-align: center; }
+
+        /* ── Card ─────────────────────────────────────────────────── */
+        .container {
+            background: var(--card);
+            width: 100%; max-width: 600px;
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            animation: cardIn .55s cubic-bezier(.16,.84,.44,1) both;
+        }
+
+        /* ── Header ───────────────────────────────────────────────── */
+        .header {
+            position: relative; overflow: hidden;
+            background: var(--grad-navy);
+            color: #fff; text-align: center;
+            padding: 38px 40px 32px;
+            border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+            transition: background .4s ease;
+        }
+        .header::before {
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background:
+                radial-gradient(520px 200px at 18% -40%, rgba(165,180,252,.35), transparent 70%),
+                radial-gradient(420px 220px at 100% 0%, rgba(139,92,246,.30), transparent 65%);
+        }
+        .header.success { background: var(--grad-ok); }
+        .header.error   { background: var(--grad-err); }
+
+        .brand-logo {
+            position: relative; z-index: 1;
+            display: block; height: 48px; width: auto; max-width: 80%;
+            margin: 0 auto 22px; object-fit: contain;
+            filter: drop-shadow(0 4px 14px rgba(0,0,0,.32));
+            animation: floaty 5s ease-in-out infinite;
+        }
+        .header h1 { position: relative; z-index: 1; font-size: 25px; font-weight: 700; margin-bottom: 6px; }
+        .header p  { position: relative; z-index: 1; font-size: 14.5px; opacity: .9; }
+
+        /* ── Content ──────────────────────────────────────────────── */
+        .content { padding: 30px 38px; }
+        .intro {
+            color: var(--text-2); font-size: 14px; text-align: center;
+            margin: 0 auto 22px; max-width: 460px;
+        }
+
         .form-error {
-            display: none; background: #fdecea; border: 1px solid #f5c6cb; color: #b3261e;
-            border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 18px;
+            display: none; align-items: flex-start; gap: 9px;
+            background: #FEF2F2; border: 1px solid #FECACA; color: #b91c1c;
+            border-radius: var(--radius); padding: 12px 14px; font-size: 13.5px;
+            margin-bottom: 18px; animation: reveal .3s ease;
         }
-        .form-error.show { display: block; }
-        .form-group { margin-bottom: 18px; }
-        .form-group label { display: block; color: #333; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+        .form-error.show { display: flex; }
+        .form-error::before {
+            content: "!"; flex: none;
+            width: 18px; height: 18px; border-radius: 50%;
+            background: #b91c1c; color: #fff; font-weight: 700; font-size: 12px;
+            display: grid; place-items: center; margin-top: 1px;
+        }
+
+        .form-group { margin-bottom: 16px; }
+        .label-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+        .form-group label { display: block; color: var(--text); font-size: 13.5px; font-weight: 600; }
+
         .form-group input, .form-group select {
-            width: 100%; padding: 13px; border: 2px solid #e9ecef; border-radius: 11px;
-            font-size: 15px; transition: border-color 0.2s ease; background: #fff;
+            width: 100%; padding: 12px 14px;
+            border: 1.5px solid var(--border); border-radius: var(--radius);
+            font-family: var(--font); font-size: 15px; color: var(--text);
+            background: #fff; transition: border-color .18s ease, box-shadow .18s ease;
         }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
-        .form-group input.invalid { border-color: #e74c3c; }
-        .error-message { color: #e74c3c; font-size: 13px; margin-top: 5px; min-height: 15px; }
-        .section {
-            border-top: 1px solid #eee; margin-top: 6px; padding-top: 18px;
+        .form-group input::placeholder { color: var(--muted); }
+        .form-group input:focus, .form-group select:focus {
+            outline: none; border-color: var(--indigo); box-shadow: 0 0 0 4px var(--ring);
         }
-        .section-head { display: flex; align-items: center; justify-content: space-between; }
-        .section-title { font-size: 15px; font-weight: 700; color: #333; }
-        .muted { color: #888; font-size: 12px; font-weight: 500; }
+        .form-group input.invalid { border-color: #ef4444; }
+        .form-group input.invalid:focus { box-shadow: 0 0 0 4px rgba(239,68,68,.18); }
+
+        select {
+            appearance: none; -webkit-appearance: none; cursor: pointer;
+            padding-right: 40px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right 14px center;
+        }
+
+        .input-wrap { position: relative; }
+        .input-wrap input { padding-right: 46px; }
+        .pw-toggle {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            display: grid; place-items: center; width: 32px; height: 32px;
+            border: none; background: transparent; color: var(--muted);
+            cursor: pointer; border-radius: 8px; transition: color .15s ease, background .15s ease;
+        }
+        .pw-toggle:hover { color: var(--text-2); background: #F1F5F9; }
+        .pw-toggle svg { width: 19px; height: 19px; }
+        .pw-toggle .eye-off { display: none; }
+        .pw-toggle.on .eye { display: none; }
+        .pw-toggle.on .eye-off { display: block; }
+
+        .pw-rules { list-style: none; display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+        .pw-rules li {
+            display: inline-flex; align-items: center; gap: 5px;
+            font-size: 11.5px; font-weight: 500; color: var(--muted);
+            background: #F1F5F9; border: 1px solid transparent;
+            padding: 3px 10px; border-radius: 999px;
+            transition: color .2s ease, background .2s ease;
+        }
+        .pw-rules li::before { content: "○"; font-size: 11px; }
+        .pw-rules li.ok { color: #15803d; background: #ECFDF3; border-color: #BBF7D0; }
+        .pw-rules li.ok::before { content: "✓"; font-weight: 700; }
+
+        .error-message { color: #ef4444; font-size: 12.5px; margin-top: 5px; min-height: 15px; }
+
+        /* ── Optional email section ───────────────────────────────── */
+        .section { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 18px; }
+        .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .section-title { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; color: var(--text); }
+        .muted { color: var(--muted); font-size: 11.5px; font-weight: 500; }
         .row { display: flex; gap: 12px; }
         .row > .form-group { flex: 1; }
+
+        #smtpFields:not(.hidden), #resendFields:not(.hidden), #fromFields:not(.hidden) {
+            animation: reveal .35s ease;
+        }
+
+        /* ── Submit ───────────────────────────────────────────────── */
         .submit-btn {
-            width: 100%; margin-top: 8px; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff;
-            border: none; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 600;
+            position: relative; overflow: hidden;
+            width: 100%; margin-top: 10px;
+            background: var(--grad); color: #fff;
+            border: none; padding: 14px; border-radius: var(--radius);
+            font-family: var(--font); font-size: 15.5px; font-weight: 700;
             cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;
+            box-shadow: 0 10px 24px -8px rgba(99,102,241,.65);
+            transition: transform .15s ease, box-shadow .2s ease, opacity .2s ease;
         }
-        .submit-btn:hover:not(:disabled) { opacity: 0.92; }
-        .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .submit-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 16px 30px -8px rgba(99,102,241,.7); }
+        .submit-btn:active:not(:disabled) { transform: translateY(0); }
+        .submit-btn:disabled { opacity: .6; cursor: not-allowed; box-shadow: none; }
+
         .spinner {
-            width: 20px; height: 20px; border: 2px solid transparent; border-top: 2px solid #fff;
-            border-radius: 50%; animation: spin 1s linear infinite; display: none;
+            width: 20px; height: 20px; border: 2px solid rgba(255,255,255,.35);
+            border-top-color: #fff; border-radius: 50%;
+            animation: spin .8s linear infinite; display: none;
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Result ───────────────────────────────────────────────── */
         .result-message { text-align: center; }
-        .result-message h2 { color: #333; font-size: 22px; margin-bottom: 12px; }
-        .result-message p { color: #666; font-size: 15px; }
-        .result-note { color: #b8860b; font-size: 13px; margin-top: 10px; }
-        .result-message a {
-            display: inline-block; margin-top: 20px; background: linear-gradient(135deg, #667eea, #764ba2);
-            color: #fff; text-decoration: none; padding: 12px 26px; border-radius: 12px; font-weight: 600;
+        .result-message:not(.hidden) { animation: reveal .45s ease; }
+        .result-message h2 { color: var(--text); font-size: 22px; margin-bottom: 12px; }
+        .result-message p { color: var(--text-2); font-size: 15px; }
+        .result-note {
+            color: #92400e; background: #FFFBEB; border: 1px solid #FDE68A;
+            border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 14px;
         }
-        .footer { background: #f8f9fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e9ecef; }
-        .copyright { color: #999; font-size: 12px; }
+        .result-message a {
+            display: inline-flex; align-items: center; gap: 8px; margin-top: 22px;
+            background: var(--grad); color: #fff; text-decoration: none;
+            padding: 12px 26px; border-radius: var(--radius); font-weight: 700; font-size: 15px;
+            box-shadow: 0 10px 24px -8px rgba(99,102,241,.6);
+            transition: transform .15s ease, box-shadow .2s ease;
+        }
+        .result-message a:hover { transform: translateY(-1px); box-shadow: 0 16px 30px -8px rgba(99,102,241,.7); }
+        .result-message a::after {
+            content: ""; width: 16px; height: 16px;
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3Cpath d='m12 5 7 7-7 7'/%3E%3C/svg%3E") center/contain no-repeat;
+        }
+
+        /* ── Footer ───────────────────────────────────────────────── */
+        .footer {
+            background: #F8FAFC; padding: 18px 38px; text-align: center;
+            border-top: 1px solid var(--line);
+            border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+        }
+        .copyright { color: var(--muted); font-size: 12px; }
+
+        /* ── Tooltips ─────────────────────────────────────────────── */
+        .tip {
+            position: relative; flex: none;
+            display: inline-grid; place-items: center;
+            width: 16px; height: 16px; border-radius: 50%;
+            background: #E2E8F0; color: #475569;
+            font-size: 11px; font-weight: 700; font-style: normal;
+            cursor: help; transition: background .15s ease, color .15s ease;
+        }
+        .tip:hover, .tip:focus { background: var(--indigo); color: #fff; outline: none; }
+        .tip-bubble {
+            position: absolute; bottom: calc(100% + 10px); left: 50%;
+            transform: translateX(-50%) translateY(4px);
+            width: max-content; max-width: 240px; text-align: left;
+            background: var(--navy); color: #fff;
+            font-size: 12px; font-weight: 500; line-height: 1.45;
+            padding: 9px 12px; border-radius: 10px;
+            box-shadow: 0 14px 34px -8px rgba(15,23,42,.55);
+            opacity: 0; visibility: hidden; pointer-events: none; z-index: 30;
+            transition: opacity .18s ease, transform .18s ease, visibility .18s;
+        }
+        .tip-bubble::after {
+            content: ""; position: absolute; top: 100%; left: 50%;
+            transform: translateX(-50%); border: 6px solid transparent;
+            border-top-color: var(--navy);
+        }
+        .tip.end .tip-bubble { left: auto; right: -6px; transform: translateX(0) translateY(4px); }
+        .tip.end .tip-bubble::after { left: auto; right: 8px; transform: none; }
+        .tip:hover .tip-bubble, .tip:focus .tip-bubble, .tip:focus-within .tip-bubble {
+            opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+        }
+        .tip.end:hover .tip-bubble, .tip.end:focus .tip-bubble {
+            transform: translateX(0) translateY(0);
+        }
+
         .hidden { display: none; }
+
+        /* ── Keyframes ────────────────────────────────────────────── */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: none; } }
+        @keyframes reveal { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+        @keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+
+        @media (max-width: 600px) {
+            body { padding: 14px; }
+            .header { padding: 32px 24px 28px; }
+            .brand-logo { height: 42px; margin-bottom: 18px; }
+            .content { padding: 26px 22px; }
+            .footer { padding: 16px 22px; }
+            .row { flex-direction: column; gap: 0; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header" id="header">
-            <div class="icon" id="icon">⚙️</div>
-            <h1 id="title">Welcome to {{appName}}</h1>
-            <p id="subtitle">Create your administrator account</p>
+            <img class="brand-logo" src="data:image/png;base64,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" alt="{{appName}}">
+            <h1 id="title">Welcome to {{appName}} 👋</h1>
+            <p id="subtitle">Let's set up your administrator account</p>
         </div>
 
         <div class="content">
             <form id="setupForm" novalidate>
-                <p class="intro">This is a one-time setup. The account you create here is the sole administrator.</p>
+                <p class="intro">This is a one-time setup. The account you create here is the sole administrator for this instance — it only takes a minute.</p>
 
                 <div class="form-error" id="formError" role="alert"></div>
 
                 <div class="form-group">
-                    <label for="name">Name</label>
-                    <input type="text" id="name" name="name" autocomplete="name" required>
+                    <div class="label-row">
+                        <label for="name">Name</label>
+                        <span class="tip" tabindex="0" role="img" aria-label="Help: Name">i<span class="tip-bubble">Your full name — shown across the dashboard and used as the sender name for emails.</span></span>
+                    </div>
+                    <input type="text" id="name" name="name" autocomplete="name" placeholder="Jane Doe" required>
                     <div class="error-message" id="nameError"></div>
                 </div>
                 <div class="form-group">
-                    <label for="email">Email</label>
-                    <input type="email" id="email" name="email" autocomplete="username" required>
+                    <div class="label-row">
+                        <label for="email">Email</label>
+                        <span class="tip" tabindex="0" role="img" aria-label="Help: Email">i<span class="tip-bubble">You'll use this email address to sign in to the dashboard. Make sure it's one you can access.</span></span>
+                    </div>
+                    <input type="email" id="email" name="email" autocomplete="username" placeholder="you@example.com" required>
                     <div class="error-message" id="emailError"></div>
                 </div>
                 <div class="form-group">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" autocomplete="new-password" required>
+                    <div class="label-row">
+                        <label for="password">Password</label>
+                        <span class="tip" tabindex="0" role="img" aria-label="Help: Password">i<span class="tip-bubble">Use at least 8 characters with an uppercase letter, a lowercase letter, a number and a symbol.</span></span>
+                    </div>
+                    <div class="input-wrap">
+                        <input type="password" id="password" name="password" autocomplete="new-password" placeholder="Create a strong password" required>
+                        <button type="button" class="pw-toggle" data-target="password" aria-label="Show password">
+                            <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                            <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                        </button>
+                    </div>
+                    <ul class="pw-rules" id="pwRules" aria-hidden="true">
+                        <li data-rule="len">8+ characters</li>
+                        <li data-rule="upper">Uppercase</li>
+                        <li data-rule="lower">Lowercase</li>
+                        <li data-rule="num">Number</li>
+                        <li data-rule="sym">Symbol</li>
+                    </ul>
                     <div class="error-message" id="passwordError"></div>
                 </div>
                 <div class="form-group">
-                    <label for="confirmPassword">Confirm Password</label>
-                    <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required>
+                    <div class="label-row">
+                        <label for="confirmPassword">Confirm Password</label>
+                        <span class="tip" tabindex="0" role="img" aria-label="Help: Confirm Password">i<span class="tip-bubble">Re-enter the same password to make sure there are no typos.</span></span>
+                    </div>
+                    <div class="input-wrap">
+                        <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" placeholder="Re-enter your password" required>
+                        <button type="button" class="pw-toggle" data-target="confirmPassword" aria-label="Show password">
+                            <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                            <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                        </button>
+                    </div>
                     <div class="error-message" id="confirmError"></div>
                 </div>
 
                 <!-- Optional email/SMTP configuration -->
                 <div class="section">
                     <div class="section-head">
-                        <span class="section-title">Email</span>
-                        <span class="muted">optional — you can set this later in settings</span>
+                        <span class="section-title">
+                            Email
+                            <span class="tip end" tabindex="0" role="img" aria-label="Help: Email delivery">i<span class="tip-bubble">Configure outgoing email so {{appName}} can send password resets and verification messages. You can safely skip this and add it later in Settings.</span></span>
+                        </span>
+                        <span class="muted">optional — set this later in settings</span>
                     </div>
                     <div class="form-group" style="margin-top:12px">
-                        <label for="emailProvider">Provider</label>
+                        <div class="label-row">
+                            <label for="emailProvider">Provider</label>
+                            <span class="tip" tabindex="0" role="img" aria-label="Help: Provider">i<span class="tip-bubble">Choose how email is sent: your own SMTP server, the Resend API, or None to disable email for now.</span></span>
+                        </div>
                         <select id="emailProvider">
                             <option value="none" selected>None</option>
                             <option value="smtp">SMTP</option>
@@ -131,27 +366,42 @@
                     <div id="smtpFields" class="hidden">
                         <div class="row">
                             <div class="form-group">
-                                <label for="smtpHost">SMTP host</label>
+                                <div class="label-row">
+                                    <label for="smtpHost">SMTP host</label>
+                                    <span class="tip" tabindex="0" role="img" aria-label="Help: SMTP host">i<span class="tip-bubble">The hostname of your mail server, e.g. smtp.gmail.com or smtp.example.com.</span></span>
+                                </div>
                                 <input type="text" id="smtpHost" placeholder="smtp.example.com">
                             </div>
                             <div class="form-group" style="max-width:120px">
-                                <label for="smtpPort">Port</label>
+                                <div class="label-row">
+                                    <label for="smtpPort">Port</label>
+                                    <span class="tip end" tabindex="0" role="img" aria-label="Help: SMTP port">i<span class="tip-bubble">Usually 587 for STARTTLS or 465 for SSL/TLS.</span></span>
+                                </div>
                                 <input type="number" id="smtpPort" value="587">
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="smtpUser">SMTP user</label>
+                            <div class="label-row">
+                                <label for="smtpUser">SMTP user</label>
+                                <span class="tip" tabindex="0" role="img" aria-label="Help: SMTP user">i<span class="tip-bubble">The username for authenticating with your mail server — often your full email address.</span></span>
+                            </div>
                             <input type="text" id="smtpUser" autocomplete="off">
                         </div>
                         <div class="form-group">
-                            <label for="smtpPass">SMTP password</label>
+                            <div class="label-row">
+                                <label for="smtpPass">SMTP password</label>
+                                <span class="tip" tabindex="0" role="img" aria-label="Help: SMTP password">i<span class="tip-bubble">The password or app-specific token for the SMTP user. Stored encrypted.</span></span>
+                            </div>
                             <input type="password" id="smtpPass" autocomplete="new-password">
                         </div>
                     </div>
 
                     <div id="resendFields" class="hidden">
                         <div class="form-group">
-                            <label for="resendKey">Resend API key</label>
+                            <div class="label-row">
+                                <label for="resendKey">Resend API key</label>
+                                <span class="tip" tabindex="0" role="img" aria-label="Help: Resend API key">i<span class="tip-bubble">Create an API key in your Resend dashboard. It starts with “re_”. Stored encrypted.</span></span>
+                            </div>
                             <input type="password" id="resendKey" placeholder="re_..." autocomplete="off">
                         </div>
                     </div>
@@ -159,11 +409,17 @@
                     <div id="fromFields" class="hidden">
                         <div class="row">
                             <div class="form-group">
-                                <label for="fromName">From name</label>
+                                <div class="label-row">
+                                    <label for="fromName">From name</label>
+                                    <span class="tip" tabindex="0" role="img" aria-label="Help: From name">i<span class="tip-bubble">The sender name recipients will see, e.g. “{{appName}} Support”.</span></span>
+                                </div>
                                 <input type="text" id="fromName" placeholder="{{appName}}">
                             </div>
                             <div class="form-group">
-                                <label for="fromEmail">From email</label>
+                                <div class="label-row">
+                                    <label for="fromEmail">From email</label>
+                                    <span class="tip end" tabindex="0" role="img" aria-label="Help: From email">i<span class="tip-bubble">The address emails are sent from. It must be verified with your provider, e.g. no-reply@example.com.</span></span>
+                                </div>
                                 <input type="email" id="fromEmail" placeholder="no-reply@example.com">
                             </div>
                         </div>
@@ -180,18 +436,21 @@
                 <h2 id="resultTitle"></h2>
                 <p id="resultText"></p>
                 <p class="result-note hidden" id="resultNote"></p>
-                <a href="{{dashboardUrl}}" id="resultLink">Go to dashboard</a>
+                <a href="{{dashboardUrl}}/login" id="resultLink">Go to login</a>
             </div>
         </div>
 
         <div class="footer">
-            <div class="copyright">© All rights reserved.</div>
+            <div class="copyright">© <span id="year"></span> {{appName}}. All rights reserved.</div>
         </div>
     </div>
 
     <script nonce="{{nonce}}">
         const SETUP_TOKEN = "{{token}}";
         const FORM_ACTION = "{{formAction}}";
+        const DASHBOARD_URL = "{{dashboardUrl}}";
+        // After a successful setup we send the admin to the dashboard's login page.
+        const LOGIN_URL = (DASHBOARD_URL || "").replace(/\/+$/, "") + "/login";
 
         const $ = (id) => document.getElementById(id);
         const form = $('setupForm');
@@ -199,7 +458,6 @@
         const spinner = $('spinner');
         const btnText = $('btnText');
         const header = $('header');
-        const icon = $('icon');
         const title = $('title');
         const subtitle = $('subtitle');
         const formError = $('formError');
@@ -209,6 +467,38 @@
         const resultNote = $('resultNote');
 
         const FIELD_ERROR = { name: 'nameError', email: 'emailError', password: 'passwordError', confirmPassword: 'confirmError' };
+
+        // ── Footer year ──
+        const yearEl = $('year');
+        if (yearEl) yearEl.textContent = new Date().getFullYear();
+
+        // ── Password visibility toggles ──
+        document.querySelectorAll('.pw-toggle').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const inp = $(btn.dataset.target);
+                if (!inp) return;
+                const show = inp.type === 'password';
+                inp.type = show ? 'text' : 'password';
+                btn.classList.toggle('on', show);
+                btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            });
+        });
+
+        // ── Live password requirement hints ──
+        const pwRules = $('pwRules');
+        function updatePwRules() {
+            if (!pwRules) return;
+            const v = $('password').value;
+            const checks = {
+                len: v.length >= 8,
+                upper: /[A-Z]/.test(v),
+                lower: /[a-z]/.test(v),
+                num: /\d/.test(v),
+                sym: /[\W_]/.test(v),
+            };
+            pwRules.querySelectorAll('li').forEach((li) => li.classList.toggle('ok', !!checks[li.dataset.rule]));
+        }
+        $('password').addEventListener('input', updatePwRules);
 
         // ── Email provider toggle ──
         const emailProvider = $('emailProvider');
@@ -293,7 +583,6 @@
 
         function fail(message) {
             header.className = 'header error';
-            icon.textContent = '❌';
             title.textContent = 'Setup failed';
             subtitle.textContent = 'Please fix the errors below';
             if (message) showBanner(message);
@@ -332,24 +621,26 @@
 
             if (res.ok) {
                 header.className = 'header success';
-                icon.textContent = '✅';
                 title.textContent = 'Setup complete!';
                 subtitle.textContent = 'Your administrator account is ready';
                 form.classList.add('hidden');
                 resultMessage.classList.remove('hidden');
                 resultTitle.textContent = 'All set 🎉';
-                resultText.textContent = 'You can now sign in to the dashboard with the credentials you just created.';
+                resultText.textContent = 'Your administrator account is ready. Taking you to the login page…';
+                const link = $('resultLink');
+                if (link) { link.href = LOGIN_URL; link.textContent = 'Go to login now'; }
                 if (data.emailWarning) {
                     resultNote.textContent = 'Note: email was not configured — ' + data.emailWarning + ' You can set it later in settings.';
                     resultNote.classList.remove('hidden');
                 }
+                // Redirect to the login page after a short moment so the success state is visible.
+                setTimeout(function () { window.location.href = LOGIN_URL; }, 2500);
                 return;
             }
 
             // Error responses
             if (res.status === 403) { fail(data.message || 'This setup link is invalid or setup is already complete.'); return; }
             header.className = 'header error';
-            icon.textContent = '❌';
             title.textContent = 'Setup failed';
             subtitle.textContent = 'Please fix the errors below';
             applyServerErrors(data || {});
