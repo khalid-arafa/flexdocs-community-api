@@ -64,8 +64,15 @@ const sendViaResend = async (cfg, { email, title, htmlContent, textContent }) =>
     html: htmlContent,
   };
 
-  const result = await resendClient.emails.send(emailData);
-  return { success: true, messageId: result.id, provider: "resend" };
+  // Resend SDK (v6) returns { data, error } and does NOT throw on API errors,
+  // so we must inspect `error` ourselves — otherwise a bad key/sender would be
+  // reported as a successful send. Throwing here lets sendEmail's catch turn it
+  // into { success: false, error }.
+  const { data, error } = await resendClient.emails.send(emailData);
+  if (error) {
+    throw new Error(error.message || error.name || "Resend rejected the request");
+  }
+  return { success: true, messageId: data?.id, provider: "resend" };
 };
 
 // Send email via Nodemailer (SMTP)
