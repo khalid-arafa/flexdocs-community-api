@@ -267,7 +267,7 @@ describe("auth_service.js", () => {
 
   describe("loginWithToken", () => {
     it("should return user on valid token", async () => {
-      verifyToken.mockReturnValue({ userId: "user-id-123" });
+      verifyToken.mockReturnValue({ userId: "user-id-123", project: "testproj" });
       getDocument.mockResolvedValue(makeUser());
       const user = await loginWithToken("user1", "testproj", "valid-token");
       expect(user.uid).toBe("user-id-123");
@@ -275,7 +275,7 @@ describe("auth_service.js", () => {
     });
 
     it("should strip sensitive fields from token login response", async () => {
-      verifyToken.mockReturnValue({ userId: "user-id-123" });
+      verifyToken.mockReturnValue({ userId: "user-id-123", project: "testproj" });
       getDocument.mockResolvedValue(makeUser({ password: "$2b$12$x", createdAt: new Date() }));
       const user = await loginWithToken("user1", "testproj", "valid-token");
       expect(user._id).toBeUndefined();
@@ -284,7 +284,7 @@ describe("auth_service.js", () => {
     });
 
     it("should throw 'User not found!' when user does not exist", async () => {
-      verifyToken.mockReturnValue({ userId: "nonexistent" });
+      verifyToken.mockReturnValue({ userId: "nonexistent", project: "testproj" });
       getDocument.mockResolvedValue(null);
       await expect(loginWithToken("user1", "testproj", "valid-token")).rejects.toThrow(
         "User not found!"

@@ -12,7 +12,7 @@ const Logger = require("../utils/logger");
 //
 // Inside a rule expression the target file/bucket is exposed as `doc` and the
 // caller as `user` (same context shape as DB rules). When no matching rule is
-// defined the action is allowed — consistent with the DB rules default.
+// defined the action is DENIED — consistent with the DB rules default-deny.
 async function checkStorageRule({
   storageRules,
   action,

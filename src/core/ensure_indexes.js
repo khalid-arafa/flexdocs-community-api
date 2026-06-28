@@ -1,7 +1,18 @@
 const Logger = require("../utils/logger");
 
-// In-memory cache for index checks
+// In-memory cache for index checks. Bounded so a flood of distinct queries
+// (each producing a unique cache key) can't grow it without limit (memory DoS).
+const INDEX_CACHE_MAX = 5000;
 const indexCache = new Set();
+
+function rememberIndexKey(key) {
+  // Simple FIFO eviction: drop the oldest entry once at capacity.
+  if (indexCache.size >= INDEX_CACHE_MAX) {
+    const oldest = indexCache.values().next().value;
+    indexCache.delete(oldest);
+  }
+  indexCache.add(key);
+}
 
 async function ensureIndexes({
   collection,
@@ -51,7 +62,7 @@ async function ensureIndexes({
     }
 
     if (!indexToCreate) {
-      indexCache.add(cacheKey);
+      rememberIndexKey(cacheKey);
       return;
     }
 
@@ -94,7 +105,7 @@ async function ensureIndexes({
     }
 
     // Add to cache after checking/creating
-    indexCache.add(cacheKey);
+    rememberIndexKey(cacheKey);
   } catch (error) {
     if (error.codeName === "NamespaceNotFound") return;
     Logger.error(error.message, { stack: error.stack });

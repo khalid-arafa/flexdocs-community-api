@@ -34,7 +34,7 @@ const { isImg, getResizedImage } = require("../utils/file");
 
 // Intercept res.sendFile so tests never touch the real filesystem.
 // This must run before every request so we add it as a route-level middleware.
-function createApp({ isDbAdmin = false } = {}) {
+function createApp({ isDbAdmin = false, storageRules } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -48,7 +48,7 @@ function createApp({ isDbAdmin = false } = {}) {
   });
 
   app.use((req, _res, next) => {
-    req.project = { code: "testproject", userId: "_system" };
+    req.project = { code: "testproject", userId: "_system", storageRules };
     req.isDbAdmin = isDbAdmin;
     next();
   });
@@ -276,11 +276,15 @@ describe("Storage Routes", () => {
 
   // ── POST /buckets - create bucket ─────────────────────────────────────────
 
+  // Storage management (create/update/delete bucket, delete file, search) runs
+  // as the admin/owner in the dashboard. Under default-DENY storage rules a
+  // non-admin with no matching rule is now (correctly) 403'd, so these
+  // route-logic tests run as a DB admin which bypasses project storage rules.
   describe("POST /buckets - create bucket", () => {
     it("should create a bucket and return it", async () => {
       createStorageBucket.mockResolvedValue("new-bucket-id");
       getBucketById.mockResolvedValue({ _id: "new-bucket-id", name: "My Bucket" });
-      const res = await request(createApp())
+      const res = await request(createApp({ isDbAdmin: true }))
         .post("/buckets")
         .send({ name: "My Bucket" });
       expect(res.status).toBe(200);
@@ -288,14 +292,14 @@ describe("Storage Routes", () => {
     });
 
     it("should return 400 when name is missing (Zod validation)", async () => {
-      const res = await request(createApp()).post("/buckets").send({});
+      const res = await request(createApp({ isDbAdmin: true })).post("/buckets").send({});
       expect(res.status).toBe(400);
       expect(res.body).toHaveProperty("errors");
     });
 
     it("should return 500 when bucket creation fails", async () => {
       createStorageBucket.mockResolvedValue(null); // failure
-      const res = await request(createApp())
+      const res = await request(createApp({ isDbAdmin: true }))
         .post("/buckets")
         .send({ name: "Bucket" });
       expect(res.status).toBe(500);
@@ -308,7 +312,7 @@ describe("Storage Routes", () => {
     const validId = "507f1f77bcf86cd799439011";
 
     it("should return 400 for an invalid bucketId", async () => {
-      const res = await request(createApp())
+      const res = await request(createApp({ isDbAdmin: true }))
         .put("/buckets/not-an-id")
         .send({ name: "new" });
       expect(res.status).toBe(400);
@@ -317,7 +321,7 @@ describe("Storage Routes", () => {
     it("should update and return 200 on success", async () => {
       updateBucket.mockResolvedValue({});
       getBucketById.mockResolvedValue({ _id: validId, name: "Updated" });
-      const res = await request(createApp())
+      const res = await request(createApp({ isDbAdmin: true }))
         .put(`/buckets/${validId}`)
         .send({ name: "Updated" });
       expect(res.status).toBe(200);
@@ -330,13 +334,13 @@ describe("Storage Routes", () => {
     const validId = "507f1f77bcf86cd799439011";
 
     it("should return 400 for an invalid bucketId", async () => {
-      const res = await request(createApp()).delete("/buckets/bad-id");
+      const res = await request(createApp({ isDbAdmin: true })).delete("/buckets/bad-id");
       expect(res.status).toBe(400);
     });
 
     it("should return 200 on successful deletion", async () => {
       deleteBucket.mockResolvedValue({ deletedCount: 1 });
-      const res = await request(createApp()).delete(`/buckets/${validId}`);
+      const res = await request(createApp({ isDbAdmin: true })).delete(`/buckets/${validId}`);
       expect(res.status).toBe(200);
     });
   });
@@ -347,13 +351,13 @@ describe("Storage Routes", () => {
     const validId = "507f1f77bcf86cd799439011";
 
     it("should return 400 for an invalid fileId", async () => {
-      const res = await request(createApp()).delete("/files/bad-id");
+      const res = await request(createApp({ isDbAdmin: true })).delete("/files/bad-id");
       expect(res.status).toBe(400);
     });
 
     it("should return 200 on successful deletion", async () => {
       deleteFile.mockResolvedValue({ deletedCount: 1 });
-      const res = await request(createApp()).delete(`/files/${validId}`);
+      const res = await request(createApp({ isDbAdmin: true })).delete(`/files/${validId}`);
       expect(res.status).toBe(200);
     });
   });
@@ -363,15 +367,82 @@ describe("Storage Routes", () => {
   describe("POST /search - search storage", () => {
     it("should return 200 with results on success", async () => {
       searchBucketContent.mockResolvedValue([{ name: "file.jpg" }]);
-      const res = await request(createApp())
+      const res = await request(createApp({ isDbAdmin: true }))
         .post("/search")
         .send({ searchTerm: "photo" });
       expect(res.status).toBe(200);
     });
 
     it("should return 400 when searchTerm is missing (Zod validation)", async () => {
-      const res = await request(createApp()).post("/search").send({});
+      const res = await request(createApp({ isDbAdmin: true })).post("/search").send({});
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── private-file download honors storage rules (#5) ───────────────────────
+  describe("private file download storage-rule enforcement", () => {
+    const privateFile = {
+      name: "secret", ext: "pdf", dir: "data/storage/testproject/abc", isPublic: false,
+      _id: "507f1f77bcf86cd799439011",
+    };
+
+    it("denies when a files read-rule evaluates false (valid token)", async () => {
+      getStorageFile.mockResolvedValue(privateFile);
+      verifyToken.mockReturnValue({ project: "testproject" });
+      const res = await request(
+        createApp({ storageRules: { "/files": { read: false } } })
+      ).get(`/${VALID_FILE_ID}/secret.pdf?token=usertok`);
+      expect(res.status).toBe(403);
+    });
+
+    it("allows when the files read-rule evaluates true", async () => {
+      getStorageFile.mockResolvedValue(privateFile);
+      verifyToken.mockReturnValue({ project: "testproject" });
+      const res = await request(
+        createApp({ storageRules: { "/files": { read: true } } })
+      ).get(`/${VALID_FILE_ID}/secret.pdf?token=usertok`);
+      expect(res.status).toBe(200);
+    });
+
+    it("stays backward-compatible (valid token, no rule defined → allowed)", async () => {
+      getStorageFile.mockResolvedValue(privateFile);
+      verifyToken.mockReturnValue({ project: "testproject" });
+      const res = await request(createApp()).get(
+        `/${VALID_FILE_ID}/secret.pdf?token=usertok`
+      );
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // ── download content-disposition / nosniff (B1 stored-XSS guard) ──────────
+  describe("download safe-serving headers", () => {
+    it("serves images inline with nosniff", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "photo", ext: "jpg", dir: "data/storage/testproject/abc", isPublic: true,
+      });
+      const res = await request(createApp()).get(`/${VALID_FILE_ID}/photo.jpg`);
+      expect(res.status).toBe(200);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["content-disposition"]).toMatch(/^inline/);
+    });
+
+    it("forces non-image files to download (attachment)", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "data", ext: "bin", dir: "data/storage/testproject/abc", isPublic: true,
+      });
+      const res = await request(createApp()).get(`/${VALID_FILE_ID}/data.bin`);
+      expect(res.status).toBe(200);
+      expect(res.headers["content-disposition"]).toMatch(/^attachment/);
+    });
+  });
+
+  // ── default-DENY storage rules (regression guard for the C1 fix) ──────────
+  describe("default-deny storage rules", () => {
+    it("should 403 a non-admin create when no storage rule allows it", async () => {
+      const res = await request(createApp({ isDbAdmin: false }))
+        .post("/buckets")
+        .send({ name: "My Bucket" });
+      expect(res.status).toBe(403);
     });
   });
 });

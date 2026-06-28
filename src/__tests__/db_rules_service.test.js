@@ -48,10 +48,10 @@ describe("DbRulesService", () => {
   // ── _evaluateRule ─────────────────────────────────────────────────────────
 
   describe("_evaluateRule()", () => {
-    it("should return true when the path rule is undefined (permissive default)", async () => {
+    it("should return false when the path rule is undefined (default-DENY)", async () => {
       service.setRules({});
       const result = await service._evaluateRule("/unknown", "read", null, null, null);
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
 
     it("should return true for a top-level boolean true rule", async () => {
@@ -78,11 +78,11 @@ describe("DbRulesService", () => {
       expect(result).toBe(false);
     });
 
-    it("should return true (permissive) when action is not defined in the rule object", async () => {
+    it("should return false (default-DENY) when action is not defined in the rule object", async () => {
       service.setRules({ "/posts": { read: true } });
-      // delete action not defined → permissive
+      // delete action not defined → denied
       const result = await service._evaluateRule("/posts", "delete", null, null, null);
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
 
     it("should evaluate a JEXL expression that resolves to true", async () => {
@@ -154,13 +154,13 @@ describe("DbRulesService", () => {
       expect(result).toBe(true);
     });
 
-    it("should return true when no rule matches (permissive default)", async () => {
+    it("should return false when no rule matches (default-DENY)", async () => {
       service.setRules({ "/posts": false });
       const result = await service.isCollectionAllowed({
         path: "/unrelated",
         action: "read",
       });
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
 
     it("should evaluate a JEXL rule with user context", async () => {

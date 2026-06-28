@@ -2,9 +2,45 @@ const { ObjectId } = require("mongodb");
 const Logger = require("../utils/logger");
 const { getUserDB } = require("./client");
 const ensureIndexes = require("./ensure_indexes");
+const { reservedCollectionNames, authCollectionName } = require("../constants");
 
 // Operators that execute arbitrary JavaScript inside MongoDB — always forbidden.
 const BLOCKED_OPERATORS = new Set(["$where", "$function", "$accumulator"]);
+
+// Value-coercion markers that may legitimately appear as keys in document DATA
+// (formatQueryObj converts them to ObjectId/Date). Every other "$"-prefixed key
+// is a MongoDB operator and must NOT appear in a stored document.
+const DATA_COERCION_KEYS = new Set(["$oid", "$date"]);
+
+// System/reserved collections that the data-plane primitives must never drop or
+// rename, even if a caller forwards an unvalidated name.
+const RESERVED_NAMES = new Set([...reservedCollectionNames, authCollectionName]);
+
+// Strip MongoDB operators from a document write payload (create/update/replace
+// data). The query allowlist intentionally permits operators for FILTERS, but a
+// stored document is just data — an operator key there is either an injection
+// attempt or a mistake. `$oid`/`$date` coercion markers are preserved.
+function sanitizeWriteData(data) {
+  function walk(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    if (Array.isArray(obj)) return obj.map(walk);
+    const out = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Drop stray operator keys ($set/$inc/$rename/$gt/…) — they have no place
+      // in a stored document. Keep the coercion markers ($oid/$date) and keep the
+      // JS-exec operators so formatQueryObj still rejects them LOUDLY (vs silently).
+      if (
+        key.startsWith("$") &&
+        !DATA_COERCION_KEYS.has(key) &&
+        !BLOCKED_OPERATORS.has(key)
+      )
+        continue;
+      out[key] = walk(value);
+    }
+    return out;
+  }
+  return walk(data);
+}
 
 // Maximum time (ms) a read query is allowed to run on the MongoDB server.
 const QUERY_TIMEOUT_MS = 10_000;
@@ -97,6 +133,8 @@ async function checkCollectionExists({ userId, projectCode, collectionName }) {
 }
 
 async function dropCollection({ userId, projectCode, collectionName }) {
+  if (RESERVED_NAMES.has(collectionName))
+    return { success: false, error: "Cannot drop a system collection" };
   const db = await getUserDB(userId, projectCode);
   try {
     await db.collection(collectionName).drop();
@@ -107,6 +145,8 @@ async function dropCollection({ userId, projectCode, collectionName }) {
 }
 
 async function renameCollection({ userId, projectCode, oldName, newName }) {
+  if (RESERVED_NAMES.has(oldName) || RESERVED_NAMES.has(newName))
+    return { success: false, error: "Cannot rename to/from a system collection" };
   const db = await getUserDB(userId, projectCode);
   try {
     const exists = await db.listCollections({ name: newName }).hasNext();
@@ -142,7 +182,7 @@ async function createDocument({ userId, projectCode, collectionName, data }) {
 
   try {
     const result = await collection.insertOne({
-      ...formatQueryObj(data),
+      ...formatQueryObj(sanitizeWriteData(data)),
       createdAt: new Date(),
     });
     return result.insertedId;
@@ -165,6 +205,15 @@ async function getDocument({
     const db = await getUserDB(userId, projectCode);
     const collection = db.collection(collectionName);
     query = formatQueryObj(query);
+    // Guard against an all-undefined query collapsing to {} and matching the
+    // FIRST document (a single-document lookup must never become match-all).
+    if (
+      query &&
+      typeof query === "object" &&
+      !Array.isArray(query) &&
+      Object.keys(query).length === 0
+    )
+      return null;
     await ensureIndexes({
       collection,
       query,
@@ -229,10 +278,10 @@ async function updateDocument({
   if (type === "replace")
     return await collection.replaceOne(
       formatQueryObj(query),
-      formatQueryObj(updateData),
+      formatQueryObj(sanitizeWriteData(updateData)),
     );
   return await collection.updateOne(formatQueryObj(query), {
-    $set: formatQueryObj(updateData),
+    $set: formatQueryObj(sanitizeWriteData(updateData)),
   });
 }
 
@@ -246,7 +295,7 @@ async function updateManyDocuments(
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(collectionName);
   return await collection.updateMany(formatQueryObj(filter), {
-    $set: formatQueryObj(updateData),
+    $set: formatQueryObj(sanitizeWriteData(updateData)),
   });
 }
 
@@ -268,6 +317,7 @@ async function deleteManyDocuments({
 }
 
 module.exports = {
+  sanitizeWriteData,
   createCollection,
   getCollectionsList,
   checkCollectionExists,

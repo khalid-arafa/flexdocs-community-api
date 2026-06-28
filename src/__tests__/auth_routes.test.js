@@ -220,7 +220,19 @@ describe("auth.routes.js", () => {
   describe("POST /anonymous-login", () => {
     it("should return 200 with anonymous user", async () => {
       anonymousLogin.mockResolvedValue({ token: "jwt", uid: "anon-id" });
-      const res = await request(createApp()).post("/anonymous-login").send({});
+      // Anonymous login is now OFF by default — enable it for this project.
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.project = {
+          code: "testproject",
+          userId: "_system",
+          authRules: { allowAnonymousLogin: true },
+        };
+        next();
+      });
+      app.use("/", require("../routes/auth.routes"));
+      const res = await request(app).post("/anonymous-login").send({});
       expect(res.status).toBe(200);
       expect(res.body.uid).toBe("anon-id");
     });

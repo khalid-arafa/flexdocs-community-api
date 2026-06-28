@@ -1,14 +1,18 @@
 const { getIO } = require("./io_connect");
 const Logger = require("../utils/logger");
+const { socketAdminGuard } = require("../middleware/db_rules.middleware");
 
 const clients = {};
 
 function authSockets(io) {
   io.on("connection", (socket) => {
-    // authentications
+    // authentications — account streams expose emails/names and create/update/
+    // delete events, so they are admin-only (same guard as watch-collections).
     socket.on("watch-accounts", async (data) => {
-      const room = `${socket.project.code}/_auth`;
-      addToClients({ room, client: socket.id });
+      socketAdminGuard(socket, async () => {
+        const room = `${socket.project.code}/_auth`;
+        addToClients({ room, client: socket.id });
+      });
     });
 
     socket.on("disconnect", () => {

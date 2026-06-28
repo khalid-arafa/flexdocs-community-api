@@ -18,7 +18,9 @@ const path = require("path");
 const { sendStorageSocketEvent } = require("../sockets/storage.sockets");
 const { verifyToken } = require("../utils/encryptions");
 const { zodValidate } = require("../middleware/zod_validate.middleware");
-const { storageGuard } = require("../middleware/storage_rules.middleware");
+const { storageGuard, checkStorageRule } = require("../middleware/storage_rules.middleware");
+const { getDocument } = require("../core/db_service");
+const { authCollectionName } = require("../constants");
 const {
   createBucketSchema,
   updateBucketSchema,
@@ -43,7 +45,7 @@ const loadFile = (req) =>
         id: req.params.fileId,
       })
     : null;
-const { uploadsPath } = require("../constants");
+const { uploadsPath, uploadLimits } = require("../constants");
 const Logger = require("../utils/logger");
 
 // Resolved absolute base for all uploads — used to prevent path traversal.
@@ -223,13 +225,43 @@ router.get("/:fileId/:filename", async (req, res) => {
   if (!file || `${file.name}.${file.ext}` != filename)
     return res.status(404).json({ message: "File not found!" });
 
-  if (!file.isPublic) {
-    if (!token && !req.isDbAdmin)
+  if (!file.isPublic && !req.isDbAdmin) {
+    if (!token)
       return res.status(403).json({ message: "Access Denied!" });
-    if (token && !req.isDbAdmin) {
-      const decoded = verifyToken(token);
-      if (!decoded || decoded.project !== req.project.code)
-        return res.status(403).json({ message: "Invalid or expired token!" });
+    const decoded = verifyToken(token);
+    if (!decoded || decoded.expired || decoded.project !== req.project.code)
+      return res.status(403).json({ message: "Invalid or expired token!" });
+
+    // If the project defines a storage rule covering file reads, enforce it on
+    // the download too (per-file access control), so a project isn't limited to
+    // "any logged-in user can read any private file". When no files read-rule is
+    // defined, the valid-project-token check above remains the gate (backward
+    // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
+    const sr = req.project.storageRules || {};
+    const fileRuleDefined =
+      Object.prototype.hasOwnProperty.call(sr, "/files") ||
+      Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
+      (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
+    if (fileRuleDefined) {
+      let user = null;
+      if (decoded.userId) {
+        user = await getDocument({
+          userId: req.project.userId,
+          projectCode: req.project.code,
+          collectionName: authCollectionName,
+          query: { _id: decoded.userId },
+          select: { password: 0, resetPasswordToken: 0 },
+        });
+      }
+      const allowed = await checkStorageRule({
+        storageRules: sr,
+        action: "read",
+        resource: "files",
+        user,
+        doc: file,
+      });
+      if (!allowed)
+        return res.status(403).json({ message: "Access denied by storage rules." });
     }
   }
 
@@ -252,6 +284,15 @@ router.get("/:fileId/:filename", async (req, res) => {
       return res.status(404).json({ message: "File not found!" });
     }
   } else size = `org`;
+
+  // Defense against stored-XSS: never let a stored file render as active content
+  // on the API origin. Images/PDFs may display inline; everything else is forced
+  // to download. nosniff stops the browser from MIME-sniffing into HTML/JS.
+  const ext = String(file.ext || "").toLowerCase();
+  const disposition = uploadLimits.inlineExtensions.has(ext) ? "inline" : "attachment";
+  const safeName = `${file.name}.${file.ext}`.replace(/[\r\n"\\]/g, "_");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", `${disposition}; filename="${safeName}"`);
 
   const fullPath = path.join(resolvedDir, `${size}.${file.ext}`);
   return res.status(200).sendFile(fullPath);

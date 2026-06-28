@@ -137,6 +137,10 @@ async function loginWithEmailAndPassword({
 
 async function loginWithToken(userId, projectCode, token) {
   const decoded = verifyToken(token);
+  // Reject tokens that aren't bound to THIS project (or are invalid/expired) so
+  // a token from another project can't be exchanged for a session here.
+  if (!decoded || decoded.expired || decoded.project !== projectCode)
+    throw Error("Invalid or expired token");
   const user = await getDocument({
     userId,
     projectCode,

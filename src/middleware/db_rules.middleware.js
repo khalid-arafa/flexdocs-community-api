@@ -1,4 +1,9 @@
-const { authCollectionName, reservedCollectionNames } = require("../constants");
+const {
+  authCollectionName,
+  reservedCollectionNames,
+  systemDatabaseName,
+  systemProjectCode,
+} = require("../constants");
 const DbRulesService = require("../core/db_rules_service");
 const { getDocument, getManyDocuments, countDocuments } = require("../core/db_service");
 const { verifyToken } = require("../utils/encryptions");
@@ -151,31 +156,60 @@ module.exports.socketColGuard = async (socket, colName, next) => {
   next();
 };
 
+// Guard for admin/dashboard streams (watch-collections, watch-accounts).
+//
+// FAIL-CLOSED: previously the user token was looked up in the *project's* auth
+// collection, where a system admin never exists, so `sender` was always null and
+// the guard fell through to next() — any socket with a valid project token plus
+// ANY valid JWT (even an anonymous or another project's user token) passed.
+//
+// The dashboard authenticates with the SYSTEM admin JWT (signed project:_system),
+// so we verify the token against the SYSTEM accounts collection and require an
+// admin/superadmin role, plus ownership of the watched project.
 module.exports.socketAdminGuard = async (socket, next) => {
-  const { projectToken, token } = socket.handshake.auth;
+  try {
+    const { projectToken, token } = socket.handshake.auth || {};
+    if (!projectToken || !token) {
+      return socket.emit("error", "Missing token or project token");
+    }
 
-  // console.log({ token, projectToken });
+    const decoded = verifyToken(token);
+    if (!decoded || decoded.expired) {
+      return socket.emit("error", "Unauthorized");
+    }
 
-  if (!projectToken || !token) {
-    socket.emit("error", "Missing token or project token");
-    return;
+    const sender = await getDocument({
+      userId: systemDatabaseName,
+      projectCode: systemProjectCode,
+      collectionName: authCollectionName,
+      query: { _id: decoded.userId },
+    });
+
+    const isAdmin =
+      sender &&
+      sender.isActive !== false &&
+      Array.isArray(sender.roles) &&
+      sender.roles.some((r) => r === "admin" || r === "superadmin");
+    if (!isAdmin) {
+      return socket.emit("error", "Unauthorized");
+    }
+
+    // Ownership: the admin must own the project being streamed. Single-admin
+    // deployments always match; this is defense-in-depth for multi-admin setups.
+    if (
+      socket.project.code !== systemProjectCode &&
+      socket.project.userId &&
+      sender._id.toString() !== socket.project.userId.toString()
+    ) {
+      return socket.emit("error", "Unauthorized");
+    }
+
+    socket.sender = sender;
+    next();
+  } catch (error) {
+    Logger.error("socketAdminGuard error: " + error.message, {
+      stack: error.stack,
+    });
+    return socket.emit("error", "Unauthorized");
   }
-
-  const decodedUserToken = verifyToken(token);
-  if (!decodedUserToken) return;
-  const sender = await getDocument({
-    userId: socket.project.userId,
-    projectCode: socket.project.code,
-    collectionName: authCollectionName,
-    // tokens are signed as { userId, project } — match that field, not _id
-    query: { _id: decodedUserToken.userId },
-  });
-  socket.sender = sender;
-
-  // if (socket.sender?._id.toString() != socket.project.userId.toString()) {
-  //   socket.emit("error", "Auth user not found");
-  //   return;
-  // }
-
-  next();
 };

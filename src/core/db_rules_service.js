@@ -117,7 +117,10 @@ class DbRulesService {
 
   async _evaluateRule(rulePath, action, user, doc, body) {
     const pathRule = this.rules[rulePath];
-    if (typeof pathRule === "undefined") return true;
+    // Default-DENY: when no rule is defined for this path the action is rejected.
+    // Firebase/Supabase behave the same way so a freshly created, un-ruled
+    // collection is never world-accessible. Operators must opt in explicitly.
+    if (typeof pathRule === "undefined") return false;
     let rule;
 
     if (typeof pathRule === "boolean" || typeof pathRule === "string") {
@@ -128,7 +131,8 @@ class DbRulesService {
     ) {
       rule = pathRule[action];
     } else {
-      return true;
+      // Rule object exists but does not define this action → deny.
+      return false;
     }
 
     if (typeof rule === "boolean") {

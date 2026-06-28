@@ -23,7 +23,8 @@ function socket_connection_init(server) {
     pingTimeout: 20000,
   });
   io.use(socketAuth);
-  // io.use(createSocketRateLimiter({ maxEvents: 100, windowMs: 60000 }));
+  // Per-socket event rate limiting — bounds event floods from a single socket.
+  io.use(createSocketRateLimiter({ maxEvents: 100, windowMs: 60000 }));
   return io;
 }
 

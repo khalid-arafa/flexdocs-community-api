@@ -16,7 +16,10 @@ const systemProjectCollectionName = "projects";
 // auth rules
 const defaultAuthRules = {
   allowEmailRegistration: true,
-  allowAnonymousLogin: true,
+  // Default-OFF: anonymous login silently mints a usable account/JWT, which —
+  // combined with default-deny rules — should be an explicit opt-in, not the
+  // default. Operators enable it per-project via the auth rules API.
+  allowAnonymousLogin: false,
   requireStrongPassword: false,
   allowPasswordReset: true,
   allowEmailVerification: true,
@@ -33,7 +36,16 @@ const uploadLimits = {
   maxFileSize: 50 * 1024 * 1024, // 50MB
   maxFileNameLength: 255,
   blockedExtensions: new Set([
+    // executables / scripts
     "exe", "bat", "cmd", "com", "msi", "scr", "pif", "vbs", "wsf", "wsh",
+    // active web content — would execute as stored XSS if served inline
+    "html", "htm", "xhtml", "shtml", "xml", "svg", "mhtml", "mht",
+    "js", "mjs", "jsp", "asp", "aspx", "php", "phtml", "htaccess",
+  ]),
+  // Extensions safe to serve inline (e.g. image previews). Everything else is
+  // forced to download via Content-Disposition: attachment.
+  inlineExtensions: new Set([
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "pdf",
   ]),
 };
 

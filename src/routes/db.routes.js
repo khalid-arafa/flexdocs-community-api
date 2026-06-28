@@ -38,7 +38,12 @@ const {
 
 const io = getIO();
 
+// Listing every collection (names + counts) is schema introspection — an
+// admin/dashboard operation. Gate it behind the DB admin like rename/drop;
+// otherwise a public project leaks its full schema to anonymous callers.
 router.post("/collections", zodValidate(listCollectionsSchema), async (req, res) => {
+  if (!req.isDbAdmin)
+    return res.status(403).json({ message: "Access denied" });
   let { where, page, limit } = req.body;
   if (!page) page = pagination.defaultPage;
   if (!limit) limit = pagination.defaultLimit;
@@ -64,7 +69,12 @@ router.post("/collections", zodValidate(listCollectionsSchema), async (req, res)
   }
 });
 
+// Explicit collection creation is an admin/dashboard operation (the data plane
+// auto-creates collections on first insert under DB rules). Gate it behind the
+// DB admin so anonymous callers on a public project can't spam collections.
 router.post("/collections/new", zodValidate(createCollectionSchema), async (req, res) => {
+  if (!req.isDbAdmin)
+    return res.status(403).json({ message: "Access denied" });
   let { name } = req.body;
   try {
     const result = await createCollection({

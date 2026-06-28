@@ -85,6 +85,13 @@ router.get("/accounts/:id", async (req, res) => {
       projectCode: constants.systemProjectCode,
       collectionName: constants.authCollectionName,
       query: { _id: req.params.id },
+      // Never return secrets/auth-state (matches /me and checkDbUserApiAuth).
+      select: {
+        password: 0,
+        resetPasswordToken: 0,
+        failedLoginAttempts: 0,
+        lockedUntil: 0,
+      },
     });
     if (!user) return res.status(404).json({ message: "couldn't find user" });
     return res.status(200).json(user);

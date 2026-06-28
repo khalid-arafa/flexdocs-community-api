@@ -54,6 +54,13 @@ router.get("/me", systemApiAuth, async (req, res) => {
       projectCode: systemProjectCode,
       collectionName: authCollectionName,
       query: { _id: req.sender._id },
+      // Never return secrets/auth-state to the client.
+      select: {
+        password: 0,
+        resetPasswordToken: 0,
+        failedLoginAttempts: 0,
+        lockedUntil: 0,
+      },
     });
     if (!user)
       return res.status(400).json({ message: "User couldn't be found!" });

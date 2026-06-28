@@ -59,7 +59,10 @@ router.post("/", zodValidate(createProjectSchema), async (req, res) => {
     const project = {
       name,
       code,
-      isPublic: isPublic || true,
+      // Default to PRIVATE. `isPublic || true` was always true, so a project
+      // could never be created private. Honour an explicit boolean; otherwise
+      // default false so a new project requires a project token by default.
+      isPublic: typeof isPublic === "boolean" ? isPublic : false,
       isActive: true,
       description,
       userId: { $oid: req.sender._id },
@@ -116,18 +119,42 @@ router.post("/:projectCode", projectApiAuth, async (req, res) => {
   }
 });
 
+// Fields a client is allowed to change on a project. Whitelisting prevents
+// mass assignment of server-managed fields like userId, code, credentials,
+// projectToken hashes, or _id via an unfiltered req.body.
+const PROJECT_UPDATABLE_FIELDS = [
+  "name",
+  "description",
+  "isActive",
+  "isPublic",
+  "allowedOrigins",
+  "dbRules",
+  "storageRules",
+  "authRules",
+];
+
 router.put("/:projectCode", projectApiAuth, async (req, res) => {
   try {
     const query = req.byAdmin
       ? { code: req.params.projectCode }
       : { userId: { $oid: req.sender._id }, code: req.params.projectCode };
+
+    const updateData = {};
+    for (const field of PROJECT_UPDATABLE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+        updateData[field] = req.body[field];
+      }
+    }
+    if (Object.keys(updateData).length === 0)
+      return res.status(400).json({ message: "No updatable fields provided" });
+
     const result = await updateDocument({
       userId: req.project.userId,
       projectCode: systemProjectCode,
       collectionName: systemProjectCollectionName,
       query,
       type: "update",
-      updateData: req.body,
+      updateData,
     });
     return res.status(200).json({ success: result.matchedCount > 0 });
   } catch (error) {

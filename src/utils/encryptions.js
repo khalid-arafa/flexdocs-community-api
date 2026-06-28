@@ -69,10 +69,47 @@ function decryptLegacy(text) {
   return decrypted.toString();
 }
 
+// JWTs are symmetric (HMAC) — pin the algorithm on both sign and verify so a
+// token can never be coerced into "alg":"none" or an asymmetric confusion.
+const JWT_ALGORITHM = "HS256";
+
+// ── Authenticated at-rest encryption for stored secrets (SMTP pass / API keys) ──
+// AES-256-GCM with the FULL 32-byte key derived from ENCRYPTION_KEY. Unlike the
+// legacy CBC routine this provides integrity (auth tag), so tampered ciphertext
+// is rejected on decrypt. Output format: "gcm:<ivHex>:<tagHex>:<cipherHex>".
+const ENC_GCM_PREFIX = "gcm:";
+
+function secretKey() {
+  return crypto.createHash("sha256").update(String(process.env.ENCRYPTION_KEY)).digest();
+}
+
+function encryptSecret(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", secretKey(), iv);
+  const ct = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${ENC_GCM_PREFIX}${iv.toString("hex")}:${tag.toString("hex")}:${ct.toString("hex")}`;
+}
+
+function decryptSecret(value) {
+  if (typeof value === "string" && value.startsWith(ENC_GCM_PREFIX)) {
+    const [ivHex, tagHex, ctHex] = value.slice(ENC_GCM_PREFIX.length).split(":");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivHex, "hex"));
+    decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+    const pt = Buffer.concat([decipher.update(Buffer.from(ctHex, "hex")), decipher.final()]);
+    return pt.toString("utf8");
+  }
+  // Backward-compat: read legacy AES-256-CBC values written before this change.
+  return decryptLegacy(value);
+}
+
 // generate a token
 function getToken(obj, { expiresIn = tokenExpiry.auth } = {}) {
   try {
-    const token = jwt.sign(obj, process.env.JWT_SECRET, { expiresIn });
+    const token = jwt.sign(obj, process.env.JWT_SECRET, {
+      expiresIn,
+      algorithm: JWT_ALGORITHM,
+    });
     return token;
   } catch (error) {
     Logger.log(error.message, __filename);
@@ -83,7 +120,9 @@ function getToken(obj, { expiresIn = tokenExpiry.auth } = {}) {
 // verify a token
 function verifyToken(token) {
   try {
-    const obj = jwt.verify(token, process.env.JWT_SECRET);
+    const obj = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: [JWT_ALGORITHM],
+    });
     return obj;
   } catch (error) {
     Logger.log(error.message, __filename);
@@ -100,6 +139,10 @@ module.exports = {
   // legacy exports kept for migration period
   encrypt: encryptLegacy,
   decrypt: decryptLegacy,
+  // authenticated at-rest secret encryption (preferred)
+  encryptSecret,
+  decryptSecret,
   getToken,
   verifyToken,
+  JWT_ALGORITHM,
 };

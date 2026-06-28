@@ -18,7 +18,10 @@ async function createAdminUser() {
       userId: systemDatabaseName,
       projectCode: systemProjectCode,
       collectionName: authCollectionName,
-      query: { roles: ["admin"] },
+      // element-match: matches any account whose roles array CONTAINS "admin"
+      // (an exact array-equality `["admin"]` misses a multi-role admin and would
+      // re-create/duplicate the admin on restart).
+      query: { roles: "admin" },
     });
 
     if (admin) {

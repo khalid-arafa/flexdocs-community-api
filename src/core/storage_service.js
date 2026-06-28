@@ -325,13 +325,16 @@ async function searchBucketContent({
   limit = 20,
   skip = 0,
 }) {
-  const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegex(searchTerm);
   let query;
   if (searchTerm.includes(".")) {
     const [name, ext] = searchTerm.split(".");
+    // Escape both halves before interpolating into $regex — otherwise a crafted
+    // search term injects regex metacharacters (ReDoS / unintended matches).
     query = {
-      name: { $regex: `^${name}$`, $options: "i" },
-      ext: { $regex: `^${ext}$`, $options: "i" },
+      name: { $regex: `^${escapeRegex(name)}$`, $options: "i" },
+      ext: { $regex: `^${escapeRegex(ext)}$`, $options: "i" },
     };
   } else {
     query = {

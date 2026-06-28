@@ -21,6 +21,7 @@ const { sendAuthSocketEvent } = require("../sockets/auth.sockets.js");
 const { hashPassword } = require("../utils/encryptions.js");
 const { isStrongPassword, isValidEmail } = require("../utils/validators.js");
 const { checkDbUserApiAuth } = require("../middleware/user_auth.middleware.js");
+const { getPublicBaseUrl } = require("../utils/helper.js");
 const { authLimiter, anonLoginLimiter } = require("../middleware/rate_limit.middleware.js");
 const { zodValidate } = require("../middleware/zod_validate.middleware.js");
 const Logger = require("../utils/logger");
@@ -65,7 +66,7 @@ router.post("/register-with-email", authLimiter, zodValidate(dbRegisterSchema), 
       sendVerifyEmail({
         project: req.project,
         email,
-        baseUrl: `${req.protocol}://${req.get("host")}/verify?token=`,
+        baseUrl: `${getPublicBaseUrl(req)}/verify?token=`,
       }).catch(() => {});
     }
     return res.status(200).json(user);
@@ -171,7 +172,7 @@ router.get("/send-email-verification", authLimiter, checkDbUserApiAuth, async (r
     const success = await sendVerifyEmail({
       project: req.project,
       email: account.email,
-      baseUrl: `${req.protocol}://${req.get("host")}/verify?token=`,
+      baseUrl: `${getPublicBaseUrl(req)}/verify?token=`,
     });
     if (!success)
       throw new Error(
@@ -195,7 +196,7 @@ router.post("/send-reset-password-email", authLimiter, async (req, res) => {
     await sendResetPasswordEmail({
       project: req.project,
       email: req.body.email,
-      baseUrl: `${req.protocol}://${req.get("host")}/reset-password?token=`,
+      baseUrl: `${getPublicBaseUrl(req)}/reset-password?token=`,
     });
 
     return res.status(200).json({
@@ -296,7 +297,7 @@ router.post("/accounts/send-verification-email", async (req, res) => {
     const success = await sendVerifyEmail({
       project: req.project,
       email: account.email,
-      baseUrl: `${req.protocol}://${req.get("host")}/verify?token=`,
+      baseUrl: `${getPublicBaseUrl(req)}/verify?token=`,
     });
     if (!success)
       throw new Error(

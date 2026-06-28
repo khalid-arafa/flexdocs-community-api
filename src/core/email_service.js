@@ -84,8 +84,11 @@ const sendViaNodemailer = async (cfg, { email, title, htmlContent, textContent }
     auth: { user: cfg.smtp.user, pass: cfg.smtp.pass },
   });
 
+  // Strip CR/LF from the display name so it can't inject extra SMTP/MIME headers
+  // (e.g. a forged Bcc) via the From line.
+  const fromName = String(cfg.from?.name || "App").replace(/[\r\n]/g, " ").trim();
   const emailData = {
-    from: `${cfg.from?.name || "App"} <${cfg.from?.email || cfg.smtp.user}>`,
+    from: `${fromName} <${cfg.from?.email || cfg.smtp.user}>`,
     to: email,
     subject: title,
     text: textContent,

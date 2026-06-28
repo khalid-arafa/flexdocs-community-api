@@ -20,7 +20,9 @@ const generateVerificationToken = ({ project, account, type }) => {
 
 const verifyVerificationToken = (token) => {
   try {
-    const obj = jwt.verify(token, process.env.JWT_SECRET);
+    const obj = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    });
     return { success: true, data: obj };
   } catch (error) {
     if (error.name === "TokenExpiredError") {

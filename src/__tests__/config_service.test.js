@@ -15,12 +15,16 @@ jest.mock("../core/client", () => ({
 }));
 
 // Reversible fake crypto so we can assert encrypt-at-rest + decrypt-on-read
+const mockEnc = (s) => `ENC(${s})`;
+const mockDec = (s) => {
+  if (typeof s === "string" && s.startsWith("ENC(") && s.endsWith(")")) return s.slice(4, -1);
+  throw new Error("bad ciphertext");
+};
 jest.mock("../utils/encryptions", () => ({
-  encrypt: (s) => `ENC(${s})`,
-  decrypt: (s) => {
-    if (typeof s === "string" && s.startsWith("ENC(") && s.endsWith(")")) return s.slice(4, -1);
-    throw new Error("bad ciphertext");
-  },
+  encrypt: mockEnc,
+  decrypt: mockDec,
+  encryptSecret: mockEnc,
+  decryptSecret: mockDec,
 }));
 
 const {

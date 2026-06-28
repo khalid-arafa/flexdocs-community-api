@@ -16,7 +16,13 @@ function dbSockets(io) {
     socket.on("set-user-token", async (data) => {
       if (!data) return delete socket.sender;
       const decodedUserToken = verifyToken(data);
-      if (!decodedUserToken) return;
+      // Project binding: ignore tokens not minted for this project.
+      if (
+        !decodedUserToken ||
+        decodedUserToken.expired ||
+        decodedUserToken.project !== socket.project.code
+      )
+        return;
       const sender = await getDocument({
         userId: socket.project.userId,
         projectCode: socket.project.code,

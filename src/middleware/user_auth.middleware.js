@@ -18,7 +18,14 @@ async function checkDbUserApiAuth(req, res, next) {
 
   try {
     const decodedToken = verifyToken(token);
-    if (decodedToken && !decodedToken.expired) {
+    // Project binding: a user token is only valid for the project it was minted
+    // for. Tokens are signed as { userId, project }. Without this check a token
+    // from project A authenticates the same userId against project B's data.
+    if (
+      decodedToken &&
+      !decodedToken.expired &&
+      decodedToken.project === req.project.code
+    ) {
       // Load the full account (minus secrets) so DB rules can reference
       // user fields such as roles, email, emailVerified, etc. Selecting only
       // _id/username previously made role-based rules silently fail over HTTP.
