@@ -18,6 +18,7 @@ async function projectApiAuth(req, res, next) {
     userId: 1,
     dbRules: 1,
     authRules: 1,
+    storageRules: 1,
     credentials: 1,
   };
 
