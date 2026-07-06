@@ -53,12 +53,15 @@ async function createStorageFile({
       uploadedBy: uploadedBy || null,
       accessedAt: new Date(),
     };
-    await createDocument({
+    const insertedId = await createDocument({
       userId,
       projectCode,
       collectionName: filesCollectionName,
       data: file,
     });
+    // createDocument returns null on insert failure — treat that as an error
+    // instead of reporting a file record that was never persisted.
+    if (!insertedId) throw new Error("Failed to save the file record");
     file._id = file._id.$oid;
     file.type = "file";
     file.createdAt = new Date();

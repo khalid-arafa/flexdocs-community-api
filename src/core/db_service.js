@@ -23,6 +23,11 @@ const RESERVED_NAMES = new Set([...reservedCollectionNames, authCollectionName])
 function sanitizeWriteData(data) {
   function walk(obj) {
     if (!obj || typeof obj !== "object") return obj;
+    // BSON/Date instances are leaf VALUES, not plain objects — walking them with
+    // Object.entries() destroys them (ObjectId flattens to a raw buffer object,
+    // Date to {}), corrupting _id fields and failing the insert downstream.
+    if (obj instanceof Date || obj instanceof ObjectId || obj._bsontype === "ObjectId")
+      return obj;
     if (Array.isArray(obj)) return obj.map(walk);
     const out = {};
     for (const [key, value] of Object.entries(obj)) {

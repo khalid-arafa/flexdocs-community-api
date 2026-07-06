@@ -159,6 +159,9 @@ function storageSockets(io) {
           fileInfo: upload.fileInfo,
           uploadedBy: socket.sender?._id ? socket.sender._id.toString() : null,
         });
+        // createStorageFile returns false on failure — without this check the
+        // client is told the upload completed even though no record exists.
+        if (!fileDoc) throw new Error("Failed to save the uploaded file's record");
 
         const link = getDownloadableLink(fileDoc);
         socket.emit("upload:complete", {

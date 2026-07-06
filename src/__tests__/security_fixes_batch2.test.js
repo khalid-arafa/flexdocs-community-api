@@ -37,6 +37,25 @@ describe("B2 — sanitizeWriteData (operator stripping in document data)", () =>
     const out = sanitizeWriteData({ list: [{ ok: 1, $push: 2 }], obj: { $unset: 1, keep: 3 } });
     expect(out).toEqual({ list: [{ ok: 1 }], obj: { keep: 3 } });
   });
+
+  it("passes ObjectId instances through untouched (regression: file uploads)", () => {
+    // createStorageFile writes { _id: { $oid: <ObjectId instance> } }. Walking the
+    // instance with Object.entries flattened it to a raw buffer object, Mongo
+    // rejected the $-prefixed _id, and uploads reported success with no record.
+    const { ObjectId } = require("mongodb");
+    const id = new ObjectId();
+    const out = sanitizeWriteData({ _id: { $oid: id }, ref: id });
+    expect(out._id.$oid).toBe(id);
+    expect(out.ref).toBe(id);
+    expect(ObjectId.isValid(out._id.$oid)).toBe(true);
+  });
+
+  it("passes Date instances through untouched", () => {
+    const at = new Date("2026-07-06T00:00:00Z");
+    const out = sanitizeWriteData({ accessedAt: at, nested: { at } });
+    expect(out.accessedAt).toBe(at);
+    expect(out.nested.at).toBe(at);
+  });
 });
 
 describe("B5 — reserved-name guards on drop/rename primitives", () => {
