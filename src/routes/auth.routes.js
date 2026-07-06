@@ -208,6 +208,16 @@ router.post("/send-reset-password-email", authLimiter, async (req, res) => {
   }
 });
 
+// current user — the SDK's getCurrentUser() and API clients use this to check
+// whether a session token is still valid, so it must answer for any signed-in
+// user (not just admins) and must sit above the adminAuth gate.
+router.get("/current-user", authLimiter, checkDbUserApiAuth, async (req, res) => {
+  if (!req.sender)
+    return res.status(401).json({ message: "Invalid or expired token" });
+  const account = { ...req.sender, uid: req.sender._id.toString() };
+  return res.status(200).json(account);
+});
+
 // admin
 const adminAuth = (req, res, next) => {
   if (!req.byAdmin)

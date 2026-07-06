@@ -290,6 +290,31 @@ describe("auth.routes.js", () => {
     });
   });
 
+  // ── GET /current-user ─────────────────────────────────────────────────────
+
+  describe("GET /current-user", () => {
+    it("should return 200 with the account for a valid token (non-admin)", async () => {
+      checkDbUserApiAuth.mockImplementation((req, _res, next) => {
+        req.sender = { _id: "user-id", email: "u@test.com" };
+        next();
+      });
+      const res = await request(createApp({ byAdmin: false })).get("/current-user");
+      expect(res.status).toBe(200);
+      expect(res.body.uid).toBe("user-id");
+      expect(res.body.email).toBe("u@test.com");
+    });
+
+    it("should return 401 when no valid token resolves to a sender", async () => {
+      checkDbUserApiAuth.mockImplementation((req, _res, next) => {
+        req.sender = null;
+        next();
+      });
+      const res = await request(createApp({ sender: null })).get("/current-user");
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain("Invalid or expired token");
+    });
+  });
+
   // ── POST /send-reset-password-email ──────────────────────────────────────
 
   describe("POST /send-reset-password-email", () => {
