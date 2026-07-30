@@ -16,7 +16,6 @@ const {
   createCollection,
   dropCollection,
   renameCollection,
-  checkCollectionExists,
 } = require("../core/db_service");
 const { getIO } = require("../sockets/io_connect");
 const { sendUpdateCollectionStreamEvent } = require("../sockets/db.sockets");

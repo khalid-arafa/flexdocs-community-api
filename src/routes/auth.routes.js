@@ -45,16 +45,22 @@ function getAuthRule(project, ruleName) {
 router.post("/register-with-email", authLimiter, zodValidate(dbRegisterSchema), async (req, res) => {
   if (!getAuthRule(req.project, "allowEmailRegistration"))
     return res.status(403).json({ message: "Email registration is currently disabled." });
-  const { email, password } = req.body;
+  const { email, password, name, avatar } = req.body;
   if (getAuthRule(req.project, "requireStrongPassword") && !isStrongPassword(password))
     return res.status(400).json({
       message: "Password must be 8+ chars with upper, lower, number & symbol.",
     });
   try {
+    // Fields are passed explicitly rather than spreading req.body, so that
+    // widening dbRegisterSchema can never again leak a privileged field
+    // (e.g. roles) into the created account.
     const user = await registerWithEmailAndPassword({
       userId: req.project.userId,
       projectCode: req.project.code,
-      ...req.body,
+      email,
+      password,
+      name,
+      avatar,
     });
     sendAuthSocketEvent({
       projectCode: req.project.code,

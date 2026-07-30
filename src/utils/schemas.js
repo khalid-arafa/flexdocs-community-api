@@ -119,12 +119,16 @@ const createCredentialSchema = z.object({
 
 // ===== Project auth (DB user auth) schemas =====
 
+// Public self-registration. `roles` is deliberately absent: this endpoint is
+// reachable anonymously, and roles feed the `user` object that DB/storage rules
+// authorize against, so accepting them here would let a caller grant itself any
+// role. Roles are assignable only via the admin-guarded account endpoints
+// (adminAddAccountSchema below, and PUT /auth/accounts/:id).
 const dbRegisterSchema = z.object({
   email,
   password,
   name: z.string().max(100).trim().optional(),
   avatar: z.string().max(500).optional(),
-  roles: z.array(z.string().max(50)).optional(),
 });
 
 const dbLoginSchema = z.object({

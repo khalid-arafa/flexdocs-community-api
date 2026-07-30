@@ -6,6 +6,7 @@ jest.mock("../utils/logger", () => ({
 }));
 
 const DbRulesService = require("../core/db_rules_service");
+const Logger = require("../utils/logger");
 
 describe("DbRulesService", () => {
   let service;
@@ -117,8 +118,12 @@ describe("DbRulesService", () => {
     it("should return false when JEXL evaluation times out after 100 ms", async () => {
       jest.useFakeTimers();
       const jexl = require("jexl");
-      // Make jexl.eval never resolve
-      jest.spyOn(jexl, "eval").mockImplementation(() => new Promise(() => {}));
+      // The service compiles once and evaluates the cached AST, so the stub has
+      // to replace the compiled expression's eval — not jexl.eval, which is
+      // never reached.
+      jest.spyOn(jexl, "compile").mockReturnValue({
+        eval: () => new Promise(() => {}),
+      });
 
       service.setRules({ "/posts": { read: "slowExpression" } });
       const resultPromise = service._evaluateRule("/posts", "read", null, null, null);
@@ -128,6 +133,70 @@ describe("DbRulesService", () => {
 
       const result = await resultPromise;
       expect(result).toBe(false);
+      expect(Logger.error).toHaveBeenCalledWith(
+        expect.stringContaining("timed out"),
+        expect.anything(),
+      );
+    });
+  });
+
+  // ── compiled-expression cache ─────────────────────────────────────────────
+
+  describe("compiled expression cache", () => {
+    it("should compile a repeated expression only once", async () => {
+      const jexl = require("jexl");
+      const compile = jest.spyOn(jexl, "compile");
+      service.setRules({ "/cached": { read: "user.tier == 'compile-once'" } });
+      for (let i = 0; i < 20; i++) {
+        await service._evaluateRule("/cached", "read", { tier: "compile-once" }, null, null);
+      }
+      expect(compile).toHaveBeenCalledTimes(1);
+    });
+
+    it("should return the same verdict on every evaluation of one expression", async () => {
+      service.setRules({ "/posts": { read: "user.role == 'admin'" } });
+      for (let i = 0; i < 100; i++) {
+        expect(
+          await service._evaluateRule("/posts", "read", { role: "admin" }, null, null)
+        ).toBe(true);
+        expect(
+          await service._evaluateRule("/posts", "read", { role: "viewer" }, null, null)
+        ).toBe(false);
+      }
+    });
+
+    it("should not leak context between evaluations of a cached expression", async () => {
+      service.setRules({ "/posts": { update: "doc.owner == user.uid" } });
+      const first = await service._evaluateRule(
+        "/posts", "update", { uid: "u1" }, { owner: "u1" }, null
+      );
+      const second = await service._evaluateRule(
+        "/posts", "update", { uid: "u2" }, { owner: "u1" }, null
+      );
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+    });
+
+    it("should deny a malformed expression on every evaluation, never throwing", async () => {
+      service.setRules({ "/posts": { read: "user.role ==" } });
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          service._evaluateRule("/posts", "read", { role: "admin" }, null, null)
+        ).resolves.toBe(false);
+      }
+    });
+
+    it("should keep evaluating correctly past the cache ceiling", async () => {
+      const MAX_COMPILED_EXPRESSIONS = 500;
+      for (let i = 0; i < MAX_COMPILED_EXPRESSIONS + 50; i++) {
+        service.setRules({ "/bulk": { read: `user.n == ${i}` } });
+        expect(await service._evaluateRule("/bulk", "read", { n: i }, null, null)).toBe(true);
+      }
+      // The earliest expression has been evicted; it must recompile rather than
+      // return a stale verdict.
+      service.setRules({ "/bulk": { read: "user.n == 0" } });
+      expect(await service._evaluateRule("/bulk", "read", { n: 0 }, null, null)).toBe(true);
+      expect(await service._evaluateRule("/bulk", "read", { n: 1 }, null, null)).toBe(false);
     });
   });
 
@@ -228,6 +297,27 @@ describe("DbRulesService", () => {
       const result = await service.isDocumentAllowed({
         path: "/posts/specific-id",
         action: "read",
+      });
+      expect(result).toBe(false);
+    });
+
+    it("should prefer dynamic [id] rule over the collection rule", async () => {
+      service.setRules({
+        "/posts": { read: true },
+        "/posts/[id]": { read: false },
+      });
+      const result = await service.isDocumentAllowed({
+        path: "/posts/doc-1",
+        action: "read",
+      });
+      expect(result).toBe(false);
+    });
+
+    it("should deny when the [id] rule object omits the action", async () => {
+      service.setRules({ "/posts/[id]": { read: true } });
+      const result = await service.isDocumentAllowed({
+        path: "/posts/doc-1",
+        action: "delete",
       });
       expect(result).toBe(false);
     });

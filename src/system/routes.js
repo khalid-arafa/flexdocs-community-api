@@ -177,7 +177,7 @@ router.delete("/me", systemApiAuth, async (req, res) => {
           userId: project.userId,
           projectCode: project.code,
         });
-        fs.rmSync(`${uploadsPath}/${project.code}`, {
+        await fs.promises.rm(`${uploadsPath}/${project.code}`, {
           recursive: true,
           force: true,
         });

@@ -192,7 +192,7 @@ router.delete("/:projectCode", projectApiAuth, async (req, res) => {
         userId: req.project.userId,
         projectCode: req.project.code,
       });
-      fs.rmSync(`${uploadsPath}/${projectCode}`, {
+      await fs.promises.rm(`${uploadsPath}/${projectCode}`, {
         recursive: true,
         force: true,
       });

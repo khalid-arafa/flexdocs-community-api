@@ -231,12 +231,37 @@ describe("schemas.js", () => {
       expect(ok(dbRegisterSchema, { email: "a@b.com", password: "pass" })).toBe(true);
     });
 
-    it("should accept optional name and roles", () => {
-      expect(ok(dbRegisterSchema, { email: "a@b.com", password: "p", name: "J", roles: ["user"] })).toBe(true);
+    it("should accept optional name and avatar", () => {
+      expect(ok(dbRegisterSchema, { email: "a@b.com", password: "p", name: "J", avatar: "u" })).toBe(true);
     });
 
     it("should reject missing email", () => {
       expect(fail(dbRegisterSchema, { password: "pass" })).toBe(true);
+    });
+
+    // Privilege-escalation regression: self-registration is anonymous, and the
+    // parsed body is what reaches the account document, so a client-supplied
+    // `roles` array must never survive validation.
+    it("should strip client-supplied roles", () => {
+      const parsed = dbRegisterSchema.safeParse({
+        email: "a@b.com",
+        password: "pass",
+        roles: ["admin", "superadmin"],
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data.roles).toBeUndefined();
+      expect(Object.keys(parsed.data)).not.toContain("roles");
+    });
+
+    it("should still allow roles on the admin-only account schema", () => {
+      const parsed = adminAddAccountSchema.safeParse({
+        name: "Admin",
+        email: "a@b.com",
+        password: "pass",
+        roles: ["admin"],
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data.roles).toEqual(["admin"]);
     });
   });
 

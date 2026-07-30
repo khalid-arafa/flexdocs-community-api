@@ -76,6 +76,24 @@ const imageSizes = {
   large: 1200,
 };
 
+// websocket limits
+const socketLimits = {
+  // Control-plane events per window (subscribe, unsubscribe, token, upload
+  // handshake). Bulk data events are excluded — see rateLimitExemptEvents.
+  maxEvents: 100,
+  windowMs: 60_000,
+  // Bulk data events are counted in bytes rather than in packets, so that a
+  // chunked upload cannot be throttled by the per-event budget. At 64KB per
+  // chunk the old 100-events/60s limit truncated any file over ~6.4MB, well
+  // below uploadLimits.maxFileSize.
+  rateLimitExemptEvents: ["upload:chunk"],
+  maxBytesPerWindow: 100 * 1024 * 1024, // 100MB/min of exempt-event payload
+  // Bounds the per-socket subscription registry. Entries are only released on
+  // unwatch or disconnect, so a long-lived socket that browses many
+  // collections would otherwise grow without limit.
+  maxWatchesPerSocket: 200,
+};
+
 module.exports = {
   reservedCollectionNames,
   systemDatabaseName,
@@ -94,4 +112,5 @@ module.exports = {
   tokenExpiry,
   pagination,
   imageSizes,
+  socketLimits,
 };

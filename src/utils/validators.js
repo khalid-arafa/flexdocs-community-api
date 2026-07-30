@@ -1,5 +1,4 @@
 const Jexl = require("jexl");
-const Logger = require("./logger");
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -15,43 +14,11 @@ function isStrongPassword(password) {
   return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/.test(password);
 }
 
-function matchPath(path, pattern) {
-  const p = pattern
-    .replace(/\/$/, "")
-    .split("/")
-    .filter((s) => s);
-  const t = path
-    .replace(/\/$/, "")
-    .split("/")
-    .filter((s) => s);
-
-  return (
-    p.length === t.length &&
-    p.every((seg, i) => seg.match(/^\[.+\]$/) || seg === t[i])
-  );
-}
-
-async function dbRulesValidator({ path, action, rules, context }) {
-  try {
-    if (Object.keys(rules).includes(action)) return rules[action];
-
-    const rulePath = Object.keys(rules).filter((i) => matchPath(path, i));
-
-    const noActionFound =
-      typeof rules[rulePath] == "undefined" ||
-      typeof rules[rulePath][action] == "undefined";
-    const authorizedAction =
-      rules[rulePath] && rules[rulePath][action] === true;
-    if (rulePath.length == 0 || noActionFound || authorizedAction) return true;
-    // if (!context.user) return false;
-    const result = await Jexl.eval(rules[rulePath][action], context);
-
-    return result;
-  } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return false;
-  }
-}
+// NOTE: an earlier rule evaluator (`dbRulesValidator`) lived here and defaulted
+// to *allow* when no rule path matched. It was superseded by
+// core/db_rules_service.js, which is default-deny. It was removed rather than
+// left exported, because wiring it back up would silently reintroduce fail-open
+// authorization. Rule evaluation belongs in DbRulesService only.
 
 const { defaultAuthRules } = require("../constants");
 
@@ -145,7 +112,6 @@ module.exports = {
   isValidEmail,
   isValidPhone,
   isStrongPassword,
-  dbRulesValidator,
   validateDbRulesStructure,
   validateAuthRules,
 };

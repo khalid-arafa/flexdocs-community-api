@@ -12,7 +12,7 @@ installer instead — see [Full stack](#full-stack-installer).
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
 - A reachable MongoDB instance (local, Docker, or hosted/Atlas)
 
 ## Manual install

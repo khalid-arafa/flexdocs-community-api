@@ -1,5 +1,5 @@
 const path = require("path");
-const fs = require("fs");
+const fsp = require("fs/promises");
 const { ObjectId } = require("mongodb");
 const { createStorageFile } = require("../core/storage_service");
 const { getDownloadableLink } = require("../utils/file");
@@ -9,6 +9,28 @@ const { checkStorageRule } = require("../middleware/storage_rules.middleware");
 const Logger = require("../utils/logger");
 
 const files_room = {};
+
+/** Removes a partial upload's file and its directory, ignoring what is absent. */
+async function discardUpload(upload) {
+  try {
+    await fsp.unlink(upload.filePath);
+  } catch {}
+  try {
+    await fsp.rmdir(path.dirname(upload.filePath));
+  } catch {}
+}
+
+/**
+ * `upload:done` and `upload:cancel` carry a bare filename from the JS SDK and
+ * a `{ name }` object from the Flutter SDK. Accept both: the server previously
+ * indexed `activeUploads` with the object, so Flutter uploads were written to
+ * disk in full and then silently never finalized.
+ */
+function uploadName(payload) {
+  if (typeof payload === "string") return payload;
+  if (payload && typeof payload.name === "string") return payload.name;
+  return undefined;
+}
 
 function storageSockets(io) {
   io.on("connection", (socket) => {
@@ -91,14 +113,23 @@ function storageSockets(io) {
 
         const _id = new ObjectId();
         const dir = path.join(`${uploadsPath}`, socket.project.code, `${_id}`);
-        fs.mkdirSync(dir, { recursive: true });
 
-        socket.activeUploads[fileInfo.name] = {
+        const upload = {
           fileInfo: { ...fileInfo, _id, ext, dir },
           filePath: path.join(dir, `org.${ext}`),
           bytesReceived: 0,
+          error: null,
+          // Serializes every filesystem operation for this upload, starting
+          // with directory creation. Registering the upload synchronously and
+          // chaining off mkdir means a chunk arriving before the directory
+          // exists is queued rather than dropped.
+          writeChain: Promise.resolve(),
         };
+        upload.writeChain = fsp.mkdir(dir, { recursive: true }).catch((error) => {
+          upload.error = error;
+        });
 
+        socket.activeUploads[fileInfo.name] = upload;
         socket.emit("upload:ready", { name: fileInfo.name });
       } catch (error) {
         Logger.error(error.message, { stack: error.stack });
@@ -120,10 +151,12 @@ function storageSockets(io) {
         }
 
         const buf = Buffer.from(chunk);
+        // Accounted synchronously so the size ceiling still holds regardless of
+        // how far behind the write queue is.
         upload.bytesReceived = (upload.bytesReceived || 0) + buf.length;
         if (upload.bytesReceived > uploadLimits.maxFileSize) {
-          try { fs.unlinkSync(upload.filePath); } catch {}
-          try { fs.rmdirSync(path.dirname(upload.filePath)); } catch {}
+          upload.error = new Error("File exceeds maximum size");
+          upload.writeChain = upload.writeChain.then(() => discardUpload(upload));
           delete socket.activeUploads[name];
           return socket.emit("upload:error", {
             name,
@@ -131,7 +164,20 @@ function storageSockets(io) {
           });
         }
 
-        fs.appendFileSync(upload.filePath, buf);
+        // Appends are queued rather than awaited inline. socket.io delivers
+        // chunks in order, but independently awaited writes would interleave
+        // and corrupt the file; chaining preserves order without blocking the
+        // event loop the way appendFileSync did — a single 50MB upload used to
+        // stall every other request 800 times over.
+        upload.writeChain = upload.writeChain.then(async () => {
+          if (upload.error) return; // already failed — drop remaining chunks
+          try {
+            await fsp.appendFile(upload.filePath, buf);
+          } catch (error) {
+            upload.error = error;
+          }
+        });
+
         socket.emit("upload:progress", {
           name: name,
           received: true,
@@ -145,11 +191,17 @@ function storageSockets(io) {
       }
     });
 
-    socket.on("upload:done", async (name) => {
-      const upload = socket.activeUploads[name];
+    socket.on("upload:done", async (payload) => {
+      const name = uploadName(payload);
+      const upload = name ? socket.activeUploads[name] : undefined;
       if (!upload) return;
 
       try {
+        // Drain queued writes before reading the file back, and surface the
+        // first write error rather than reporting a truncated file as complete.
+        await upload.writeChain;
+        if (upload.error) throw upload.error;
+
         upload.fileInfo.name = upload.fileInfo.name.replace(/\.[^/.]+$/, ""); // removing extension
 
         const fileDoc = await createStorageFile({
@@ -164,11 +216,12 @@ function storageSockets(io) {
         if (!fileDoc) throw new Error("Failed to save the uploaded file's record");
 
         const link = getDownloadableLink(fileDoc);
+        const { size } = await fsp.stat(upload.filePath);
         socket.emit("upload:complete", {
           name: name,
           filename: path.basename(upload.filePath),
           url: link,
-          size: fs.statSync(upload.filePath).size,
+          size,
         });
 
         sendStorageSocketEvent({
@@ -180,12 +233,34 @@ function storageSockets(io) {
         delete socket.activeUploads[name];
       } catch (error) {
         Logger.error(error.message, { stack: error.stack });
+        // The partial file is unreachable once the entry is dropped, so remove
+        // it rather than leaving it to accumulate on disk.
+        upload.error = upload.error || error;
+        upload.writeChain.then(() => discardUpload(upload)).catch(() => {});
         socket.emit("upload:error", {
           name,
           message: "Failed to complete upload",
         });
         delete socket.activeUploads[name];
       }
+    });
+
+    // The JS SDK emits this when a caller aborts an upload. Without a handler
+    // the partial file survived until the socket disconnected.
+    socket.on("upload:cancel", (payload) => {
+      const name = uploadName(payload);
+      const upload = name ? socket.activeUploads[name] : undefined;
+      if (!upload) return;
+      upload.error = new Error("Upload cancelled");
+      delete socket.activeUploads[name];
+      upload.writeChain
+        .then(() => discardUpload(upload))
+        .catch((error) =>
+          Logger.error("upload cancel cleanup failed: " + error.message, {
+            stack: error.stack,
+          }),
+        );
+      socket.emit("upload:cancelled", { name });
     });
 
     // storage for admin
@@ -204,11 +279,19 @@ function storageSockets(io) {
     });
 
     socket.on("disconnect", () => {
-      // Clean up any in-progress uploads
+      // Clean up any in-progress uploads. Each discard is chained after that
+      // upload's queued writes so cleanup cannot race a pending append and
+      // leave the file behind.
       for (const name of Object.keys(socket.activeUploads)) {
         const upload = socket.activeUploads[name];
-        try { fs.unlinkSync(upload.filePath); } catch {}
-        try { fs.rmdirSync(path.dirname(upload.filePath)); } catch {}
+        upload.error = new Error("Socket disconnected");
+        upload.writeChain
+          .then(() => discardUpload(upload))
+          .catch((error) =>
+            Logger.error("upload cleanup failed: " + error.message, {
+              stack: error.stack,
+            }),
+          );
       }
       socket.activeUploads = {};
 
@@ -266,4 +349,14 @@ function sendStorageSocketEvent({
 module.exports = {
   storageSockets,
   sendStorageSocketEvent,
+  // exported for tests
+  __internals: {
+    files_room,
+    uploadName,
+    discardUpload,
+    getStorageRoomName,
+    getStorageSocketsByRoom,
+    addSocketToStorageRoom,
+    removeStorageSocketFromRoom,
+  },
 };

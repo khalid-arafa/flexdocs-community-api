@@ -14,6 +14,36 @@ function rememberIndexKey(key) {
   indexCache.add(key);
 }
 
+/**
+ * Describes the *shape* of a request — which fields are filtered and how the
+ * result is sorted — rather than the values being matched.
+ *
+ * The key used to embed the query values, so `{email: "a@b.c"}` and
+ * `{email: "x@y.z"}` were distinct entries. A lookup endpoint therefore issued
+ * a `listIndexes` round-trip on essentially every request and evicted its own
+ * entries, so the cache never did the job it existed for. Only the field names
+ * and sort directions affect which index is needed.
+ */
+function indexCacheKey(namespace, queryFields, sortFields, sort) {
+  const sortPart = sortFields.map((field) => `${field}:${sort[field]}`).join(",");
+  return `${namespace}|${queryFields.join(",")}|${sortPart}`;
+}
+
+/**
+ * Field names of a filter, normalized.
+ *
+ * Sorted because a filter is a conjunction — key order is an artifact of how
+ * the caller happened to build the object, and leaving it unsorted meant the
+ * same logical query serialized two ways produced two different indexes.
+ * Sort fields are deliberately *not* sorted: their order is semantically
+ * significant.
+ */
+function normalizedQueryFields(query) {
+  return Object.keys(query)
+    .filter((field) => field !== "_id")
+    .sort();
+}
+
 async function ensureIndexes({
   collection,
   query = {},
@@ -22,8 +52,14 @@ async function ensureIndexes({
 }) {
   if (!canCreateIndexes) return;
 
-  // Create cache key from collection name + query + sort
-  const cacheKey = `${collection.namespace}_${JSON.stringify(query)}_${JSON.stringify(sort)}`;
+  const queryFields = normalizedQueryFields(query);
+  const sortFields = Object.keys(sort);
+  const cacheKey = indexCacheKey(
+    collection.namespace,
+    queryFields,
+    sortFields,
+    sort,
+  );
 
   // If already checked, skip
   if (indexCache.has(cacheKey)) return;
@@ -31,10 +67,6 @@ async function ensureIndexes({
   try {
     // Get existing indexes first
     const existingIndexes = await collection.indexes();
-
-    // Determine needed index
-    const queryFields = Object.keys(query).filter((field) => field !== "_id");
-    const sortFields = Object.keys(sort);
 
     let indexToCreate = null;
 
@@ -119,8 +151,14 @@ function clearIndexCache() {
 
 // Optional: Function to remove specific cache entry
 function removeFromIndexCache(collection, query = {}, sort = {}) {
-  const cacheKey = `${collection.namespace}_${JSON.stringify(query)}_${JSON.stringify(sort)}`;
-  indexCache.delete(cacheKey);
+  indexCache.delete(
+    indexCacheKey(
+      collection.namespace,
+      normalizedQueryFields(query),
+      Object.keys(sort),
+      sort,
+    ),
+  );
 }
 
 module.exports = ensureIndexes;

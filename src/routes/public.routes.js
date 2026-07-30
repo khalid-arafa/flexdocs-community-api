@@ -106,7 +106,7 @@ router.get("/reset-password", async (req, res) => {
       "templates",
       "reset-password-page.html",
     );
-    let html = fs.readFileSync(templatePath, "utf8");
+    let html = await fs.promises.readFile(templatePath, "utf8");
     const variables = {
       projectName: project.name,
       formAction: `/reset-password?token=${account.resetPasswordToken}`,
