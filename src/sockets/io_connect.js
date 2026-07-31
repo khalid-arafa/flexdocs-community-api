@@ -2,6 +2,7 @@ const socketIo = require("socket.io");
 const { socketAuth } = require("../middleware/socket_auth.middleware");
 const { parseSystemOrigins } = require("../middleware/cors.middleware");
 const { createSocketRateLimiter } = require("../middleware/socket_rate_limit.middleware");
+const { socketLimits } = require("../constants");
 const Logger = require("../utils/logger");
 
 let io = null;
@@ -23,8 +24,17 @@ function socket_connection_init(server) {
     pingTimeout: 20000,
   });
   io.use(socketAuth);
-  // Per-socket event rate limiting — bounds event floods from a single socket.
-  io.use(createSocketRateLimiter({ maxEvents: 100, windowMs: 60000 }));
+  // Per-socket rate limiting — bounds event floods from a single socket.
+  // Bulk data events are metered by bytes rather than packet count so that
+  // chunked uploads are not throttled by the control-event budget.
+  io.use(
+    createSocketRateLimiter({
+      maxEvents: socketLimits.maxEvents,
+      windowMs: socketLimits.windowMs,
+      exemptEvents: socketLimits.rateLimitExemptEvents,
+      maxBytes: socketLimits.maxBytesPerWindow,
+    }),
+  );
   return io;
 }
 

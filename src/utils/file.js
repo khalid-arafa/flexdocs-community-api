@@ -1,8 +1,18 @@
 const path = require("path");
 const Logger = require("./logger");
-const fs = require("fs");
+const fsp = require("fs/promises");
 const sharp = require("sharp");
 const { imageSizes } = require("../constants");
+
+/** Reads a file, returning null when it does not exist. */
+async function readIfExists(filePath) {
+  try {
+    return await fsp.readFile(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 function isImg(filePath) {
   const ext = path.extname(filePath).toLowerCase().slice(1);
@@ -31,13 +41,16 @@ async function getResizedImage(dirPath, ext, size = "medium") {
 
   try {
     const outputFile = path.join(dirPath, `${size}.${ext}`);
-    if (fs.existsSync(outputFile)) return fs.readFileSync(outputFile);
+    // Read directly instead of checking existence first: one syscall rather
+    // than two, and no window in which the file disappears between the two.
+    const cached = await readIfExists(outputFile);
+    if (cached) return cached;
 
     const originalFile = path.join(dirPath, `org.${ext}`);
-    if (!fs.existsSync(originalFile))
-      throw new Error(`Original image not found: ${originalFile}`);
 
-    const { width } = await sharp(originalFile).metadata();
+    const { width } = await sharp(originalFile).metadata().catch(() => {
+      throw new Error(`Original image not found: ${originalFile}`);
+    });
     const targetWidth = SIZE_MAP[size];
 
     // Determine the final width without upscaling
@@ -49,17 +62,27 @@ async function getResizedImage(dirPath, ext, size = "medium") {
         : width < SIZE_MAP.large
         ? SIZE_MAP.medium
         : targetWidth;
-    size =
+    const resolvedSize =
       Object.entries(SIZE_MAP).find(([key, val]) => val === finalWidth)?.[0] ||
       size;
-    if (fs.existsSync(outputFile)) return fs.readFileSync(outputFile);
+
+    // A request for a size larger than the source resolves to a smaller
+    // bucket, so the cache path has to be recomputed. Re-checking the
+    // originally requested path instead meant the result was cached under the
+    // requested bucket rather than the one actually produced, and every later
+    // request for the resolved bucket re-ran sharp against the same source.
+    const resolvedFile = path.join(dirPath, `${resolvedSize}.${ext}`);
+    if (resolvedFile !== outputFile) {
+      const alreadyResized = await readIfExists(resolvedFile);
+      if (alreadyResized) return alreadyResized;
+    }
 
     const buffer = await sharp(originalFile)
       .resize(finalWidth)
       .toFormat(ext, { quality: 80 }) // Optimize while preserving quality
       .toBuffer();
 
-    fs.writeFileSync(outputFile, buffer); // Save resized version
+    await fsp.writeFile(resolvedFile, buffer); // Save resized version
 
     return buffer;
   } catch (error) {

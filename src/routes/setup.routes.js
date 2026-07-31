@@ -97,7 +97,7 @@ router.get("/setup", async (req, res) => {
     // script via a per-request nonce.
     const nonce = crypto.randomBytes(16).toString("base64");
 
-    let html = fs.readFileSync(SETUP_TEMPLATE, "utf8");
+    let html = await fs.promises.readFile(SETUP_TEMPLATE, "utf8");
     const vars = {
       appName: escapeHtml(process.env.APP_NAME || "FlexDocs"),
       token: safeToken,

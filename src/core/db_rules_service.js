@@ -3,18 +3,47 @@ const Logger = require("../utils/logger");
 
 const JEXL_TIMEOUT_MS = 100;
 
-// Wraps jexl.eval with a hard timeout to prevent hanging on complex expressions.
-// On timeout the rule is treated as a deny (returns false via the caller's catch).
+// jexl.eval() re-parses the expression string into an AST on every call. Rules
+// are a small fixed set of strings evaluated on every authorized request, so
+// that parse is pure repeated work — roughly 10x the cost of the evaluation
+// itself. Compile once and reuse the AST.
+//
+// Bounded even though rules are operator-authored and few: the cache is keyed
+// by string, and an unbounded string-keyed cache on a request path is a memory
+// DoS waiting for the day rules become user-supplied.
+const MAX_COMPILED_EXPRESSIONS = 500;
+const compiledExpressions = new Map();
+
+function getCompiledExpression(expression) {
+  const cached = compiledExpressions.get(expression);
+  if (cached) return cached;
+
+  // Throws on a syntax error; callers evaluate inside a try that denies.
+  const compiled = jexl.compile(expression);
+  if (compiledExpressions.size >= MAX_COMPILED_EXPRESSIONS) {
+    compiledExpressions.delete(compiledExpressions.keys().next().value);
+  }
+  compiledExpressions.set(expression, compiled);
+  return compiled;
+}
+
+// Wraps evaluation with a hard timeout to prevent hanging on complex
+// expressions. On timeout the rule is treated as a deny (via the caller's
+// catch). The timer is cleared once the race settles: leaving it pending kept
+// an active timer per evaluation for the full window, which on a busy process
+// meant thousands of live timers and a delayed shutdown.
 function evalWithTimeout(expression, context) {
-  return Promise.race([
-    jexl.eval(expression, context),
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`JEXL evaluation timed out after ${JEXL_TIMEOUT_MS}ms`)),
-        JEXL_TIMEOUT_MS,
-      )
-    ),
-  ]);
+  const compiled = getCompiledExpression(expression);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`JEXL evaluation timed out after ${JEXL_TIMEOUT_MS}ms`)),
+      JEXL_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([compiled.eval(context), timeout]).finally(() =>
+    clearTimeout(timer),
+  );
 }
 
 class DbRulesService {

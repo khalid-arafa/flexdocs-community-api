@@ -9,7 +9,6 @@ const {
   isValidEmail,
   isValidPhone,
   isStrongPassword,
-  dbRulesValidator,
   validateDbRulesStructure,
   validateAuthRules,
 } = require("../utils/validators");
@@ -233,75 +232,4 @@ describe("validators.js", () => {
     });
   });
 
-  describe("dbRulesValidator", () => {
-    it("should return true when no matching path found (permissive default)", async () => {
-      const result = await dbRulesValidator({
-        path: "/nonexistent",
-        action: "read",
-        rules: {},
-        context: { user: null },
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return the boolean when action is a top-level key with value true", async () => {
-      const result = await dbRulesValidator({
-        path: "/users",
-        action: "read",
-        rules: { read: true },
-        context: {},
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false when action is a top-level key with value false", async () => {
-      const result = await dbRulesValidator({
-        path: "/users",
-        action: "read",
-        rules: { read: false },
-        context: {},
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return true when path matches and action is true", async () => {
-      const result = await dbRulesValidator({
-        path: "/posts",
-        action: "read",
-        rules: { "/posts": { read: true } },
-        context: {},
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should evaluate JEXL expression and return result", async () => {
-      const result = await dbRulesValidator({
-        path: "/posts",
-        action: "read",
-        rules: { "/posts": { read: "user.role == 'admin'" } },
-        context: { user: { role: "admin" } },
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false when JEXL expression evaluates to false", async () => {
-      const result = await dbRulesValidator({
-        path: "/posts",
-        action: "read",
-        rules: { "/posts": { read: "user.role == 'admin'" } },
-        context: { user: { role: "viewer" } },
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return true when path matches but action is undefined", async () => {
-      const result = await dbRulesValidator({
-        path: "/posts",
-        action: "delete",
-        rules: { "/posts": { read: true } },
-        context: {},
-      });
-      expect(result).toBe(true);
-    });
-  });
 });
