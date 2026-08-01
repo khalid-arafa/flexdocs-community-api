@@ -21,18 +21,46 @@ function isImg(filePath) {
 
 function getDownloadableLink(doc) {
   try {
-    // let link = path.join("uploads", `${doc.projectCode}`, doc._id.toString(), `${doc.name}.${doc.ext}`);
+    // The filename segment is percent-encoded: file names may contain
+    // non-ASCII characters (Arabic, accents), spaces, "#", "?" or "%", all of
+    // which produce a broken or truncated URL when pasted in raw.
     let link = path.join(
       "projects",
       `${doc.projectCode}`,
       "storage",
       doc._id.toString(),
-      `${doc.name}.${doc.ext}`
+      encodeURIComponent(`${doc.name}.${doc.ext}`)
     );
     return link;
   } catch (error) {
     Logger.error(error.message, { stack: error.stack });
     return null;
+  }
+}
+
+/**
+ * Builds an RFC 6266 Content-Disposition value.
+ *
+ * HTTP header values are latin1-only: passing a name with Arabic (or any
+ * codepoint above U+00FF) to res.setHeader throws ERR_INVALID_CHAR, which
+ * inside an async route surfaced as an unhandled rejection and left the
+ * request hanging until the client timed out — every file with a non-ASCII
+ * name was effectively undownloadable. So send an ASCII-safe `filename` for
+ * old clients plus `filename*` with the real UTF-8 name for everyone else.
+ */
+function contentDisposition(type, filename) {
+  const name = String(filename).replace(/[\r\n"\\]/g, "_");
+  // eslint-disable-next-line no-control-regex
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_");
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/** Compares file names ignoring Unicode normalization differences (NFC/NFD). */
+function sameFileName(a, b) {
+  try {
+    return String(a).normalize("NFC") === String(b).normalize("NFC");
+  } catch {
+    return a === b;
   }
 }
 
@@ -95,4 +123,6 @@ module.exports = {
   isImg,
   getDownloadableLink,
   getResizedImage,
+  contentDisposition,
+  sameFileName,
 };

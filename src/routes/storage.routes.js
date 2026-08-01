@@ -13,7 +13,12 @@ const {
   createStorageBucket,
   searchBucketContent,
 } = require("../core/storage_service");
-const { isImg, getResizedImage } = require("../utils/file");
+const {
+  isImg,
+  getResizedImage,
+  contentDisposition,
+  sameFileName,
+} = require("../utils/file");
 const path = require("path");
 const { sendStorageSocketEvent } = require("../sockets/storage.sockets");
 const { verifyToken } = require("../utils/encryptions");
@@ -217,85 +222,97 @@ router.delete("/files/:fileId", storageGuard("delete", "files", loadFile), async
 });
 
 // public
-router.get("/:fileId/:filename", async (req, res) => {
-  const { fileId, filename } = req.params;
-  let { token, size } = req.query;
+router.get("/:fileId/:filename", async (req, res, next) => {
+  try {
+    const { fileId, filename } = req.params;
+    let { token, size } = req.query;
 
-  const file = await getStorageFile(req.project.code, fileId);
-  if (!file || `${file.name}.${file.ext}` != filename)
-    return res.status(404).json({ message: "File not found!" });
-
-  if (!file.isPublic && !req.isDbAdmin) {
-    if (!token)
-      return res.status(403).json({ message: "Access Denied!" });
-    const decoded = verifyToken(token);
-    if (!decoded || decoded.expired || decoded.project !== req.project.code)
-      return res.status(403).json({ message: "Invalid or expired token!" });
-
-    // If the project defines a storage rule covering file reads, enforce it on
-    // the download too (per-file access control), so a project isn't limited to
-    // "any logged-in user can read any private file". When no files read-rule is
-    // defined, the valid-project-token check above remains the gate (backward
-    // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
-    const sr = req.project.storageRules || {};
-    const fileRuleDefined =
-      Object.prototype.hasOwnProperty.call(sr, "/files") ||
-      Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
-      (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
-    if (fileRuleDefined) {
-      let user = null;
-      if (decoded.userId) {
-        user = await getDocument({
-          userId: req.project.userId,
-          projectCode: req.project.code,
-          collectionName: authCollectionName,
-          query: { _id: decoded.userId },
-          select: { password: 0, resetPasswordToken: 0 },
-        });
-      }
-      const allowed = await checkStorageRule({
-        storageRules: sr,
-        action: "read",
-        resource: "files",
-        user,
-        doc: file,
-      });
-      if (!allowed)
-        return res.status(403).json({ message: "Access denied by storage rules." });
-    }
-  }
-
-  // Guard against path traversal: ensure file.dir resolves inside the uploads base.
-  const resolvedDir = path.resolve(process.cwd(), file.dir);
-  if (!resolvedDir.startsWith(UPLOADS_BASE + path.sep) && resolvedDir !== UPLOADS_BASE) {
-    Logger.error("Path traversal attempt blocked", { fileId, dir: file.dir });
-    return res.status(403).json({ message: "Access Denied!" });
-  }
-
-  if (
-    size &&
-    isImg(`${file.name}.${file.ext}`) &&
-    ["small", "medium", "large"].includes(size)
-  ) {
-    try {
-      await getResizedImage(file.dir, file.ext, size);
-    } catch (error) {
-      Logger.error("Image resize failed: " + error.message, { fileId, size });
+    const file = await getStorageFile(req.project.code, fileId);
+    // Compared with normalization applied: the same Arabic (or accented) name
+    // can arrive as NFC or NFD depending on the client that uploaded it, and a
+    // byte comparison rejects the file as "not found".
+    if (!file || !sameFileName(`${file.name}.${file.ext}`, filename))
       return res.status(404).json({ message: "File not found!" });
+
+    if (!file.isPublic && !req.isDbAdmin) {
+      if (!token)
+        return res.status(403).json({ message: "Access Denied!" });
+      const decoded = verifyToken(token);
+      if (!decoded || decoded.expired || decoded.project !== req.project.code)
+        return res.status(403).json({ message: "Invalid or expired token!" });
+
+      // If the project defines a storage rule covering file reads, enforce it on
+      // the download too (per-file access control), so a project isn't limited to
+      // "any logged-in user can read any private file". When no files read-rule is
+      // defined, the valid-project-token check above remains the gate (backward
+      // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
+      const sr = req.project.storageRules || {};
+      const fileRuleDefined =
+        Object.prototype.hasOwnProperty.call(sr, "/files") ||
+        Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
+        (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
+      if (fileRuleDefined) {
+        let user = null;
+        if (decoded.userId) {
+          user = await getDocument({
+            userId: req.project.userId,
+            projectCode: req.project.code,
+            collectionName: authCollectionName,
+            query: { _id: decoded.userId },
+            select: { password: 0, resetPasswordToken: 0 },
+          });
+        }
+        const allowed = await checkStorageRule({
+          storageRules: sr,
+          action: "read",
+          resource: "files",
+          user,
+          doc: file,
+        });
+        if (!allowed)
+          return res.status(403).json({ message: "Access denied by storage rules." });
+      }
     }
-  } else size = `org`;
 
-  // Defense against stored-XSS: never let a stored file render as active content
-  // on the API origin. Images/PDFs may display inline; everything else is forced
-  // to download. nosniff stops the browser from MIME-sniffing into HTML/JS.
-  const ext = String(file.ext || "").toLowerCase();
-  const disposition = uploadLimits.inlineExtensions.has(ext) ? "inline" : "attachment";
-  const safeName = `${file.name}.${file.ext}`.replace(/[\r\n"\\]/g, "_");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Disposition", `${disposition}; filename="${safeName}"`);
+    // Guard against path traversal: ensure file.dir resolves inside the uploads base.
+    const resolvedDir = path.resolve(process.cwd(), file.dir);
+    if (!resolvedDir.startsWith(UPLOADS_BASE + path.sep) && resolvedDir !== UPLOADS_BASE) {
+      Logger.error("Path traversal attempt blocked", { fileId, dir: file.dir });
+      return res.status(403).json({ message: "Access Denied!" });
+    }
 
-  const fullPath = path.join(resolvedDir, `${size}.${file.ext}`);
-  return res.status(200).sendFile(fullPath);
+    if (
+      size &&
+      isImg(`${file.name}.${file.ext}`) &&
+      ["small", "medium", "large"].includes(size)
+    ) {
+      try {
+        await getResizedImage(file.dir, file.ext, size);
+      } catch (error) {
+        Logger.error("Image resize failed: " + error.message, { fileId, size });
+        return res.status(404).json({ message: "File not found!" });
+      }
+    } else size = `org`;
+
+    // Defense against stored-XSS: never let a stored file render as active content
+    // on the API origin. Images/PDFs may display inline; everything else is forced
+    // to download. nosniff stops the browser from MIME-sniffing into HTML/JS.
+    const ext = String(file.ext || "").toLowerCase();
+    const disposition = uploadLimits.inlineExtensions.has(ext) ? "inline" : "attachment";
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader(
+      "Content-Disposition",
+      contentDisposition(disposition, `${file.name}.${file.ext}`)
+    );
+
+    const fullPath = path.join(resolvedDir, `${size}.${file.ext}`);
+    return res.status(200).sendFile(fullPath);
+  } catch (error) {
+    // Express 4 does not forward rejections from async handlers, so anything
+    // thrown past this point would leave the request open forever instead of
+    // answering. Hand it to the central error handler.
+    return next(error);
+  }
 });
 
 module.exports = router;

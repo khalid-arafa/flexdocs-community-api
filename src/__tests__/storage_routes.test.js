@@ -8,10 +8,17 @@ jest.mock("../utils/logger", () => ({
 jest.mock("../core/storage_service");
 jest.mock("../utils/encryptions");
 jest.mock("../sockets/storage.sockets", () => ({ sendStorageSocketEvent: jest.fn() }));
-jest.mock("../utils/file", () => ({
-  isImg: jest.fn().mockReturnValue(false),
-  getResizedImage: jest.fn().mockResolvedValue(true),
-}));
+jest.mock("../utils/file", () => {
+  // contentDisposition/sameFileName are pure helpers — exercise the real ones
+  // so the header they build is actually covered here.
+  const actual = jest.requireActual("../utils/file");
+  return {
+    isImg: jest.fn().mockReturnValue(false),
+    getResizedImage: jest.fn().mockResolvedValue(true),
+    contentDisposition: actual.contentDisposition,
+    sameFileName: actual.sameFileName,
+  };
+});
 
 const request = require("supertest");
 const express = require("express");
@@ -433,6 +440,35 @@ describe("Storage Routes", () => {
       const res = await request(createApp()).get(`/${VALID_FILE_ID}/data.bin`);
       expect(res.status).toBe(200);
       expect(res.headers["content-disposition"]).toMatch(/^attachment/);
+    });
+
+    // A non-latin1 name used to throw ERR_INVALID_CHAR out of setHeader. Inside
+    // an async handler that became an unhandled rejection with no response
+    // written, so every Arabic-named file hung the request until it timed out.
+    it("serves a file whose name is not ASCII (Arabic) instead of hanging", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "تقرير التكلفة", ext: "pdf", dir: "data/storage/testproject/abc", isPublic: true,
+      });
+      const res = await request(createApp()).get(
+        `/${VALID_FILE_ID}/${encodeURIComponent("تقرير التكلفة.pdf")}`
+      );
+      expect(res.status).toBe(200);
+      const disposition = res.headers["content-disposition"];
+      // latin1-safe fallback plus the real name in RFC 5987 form
+      expect(disposition).toMatch(/^inline; filename="[\x20-\x7e]*"/);
+      expect(disposition).toContain(
+        `filename*=UTF-8''${encodeURIComponent("تقرير التكلفة.pdf")}`
+      );
+    });
+
+    it("matches a requested name that differs only in unicode normalization", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "تقرير".normalize("NFC"), ext: "pdf", dir: "data/storage/testproject/abc", isPublic: true,
+      });
+      const res = await request(createApp()).get(
+        `/${VALID_FILE_ID}/${encodeURIComponent("تقرير.pdf".normalize("NFD"))}`
+      );
+      expect(res.status).toBe(200);
     });
   });
 
