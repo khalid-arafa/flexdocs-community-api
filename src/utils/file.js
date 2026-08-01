@@ -79,38 +79,22 @@ async function getResizedImage(dirPath, ext, size = "medium") {
     const { width } = await sharp(originalFile).metadata().catch(() => {
       throw new Error(`Original image not found: ${originalFile}`);
     });
-    const targetWidth = SIZE_MAP[size];
 
-    // Determine the final width without upscaling
-    const finalWidth =
-      width < SIZE_MAP.small
-        ? width
-        : width < SIZE_MAP.medium
-        ? SIZE_MAP.small
-        : width < SIZE_MAP.large
-        ? SIZE_MAP.medium
-        : targetWidth;
-    const resolvedSize =
-      Object.entries(SIZE_MAP).find(([key, val]) => val === finalWidth)?.[0] ||
-      size;
-
-    // A request for a size larger than the source resolves to a smaller
-    // bucket, so the cache path has to be recomputed. Re-checking the
-    // originally requested path instead meant the result was cached under the
-    // requested bucket rather than the one actually produced, and every later
-    // request for the resolved bucket re-ran sharp against the same source.
-    const resolvedFile = path.join(dirPath, `${resolvedSize}.${ext}`);
-    if (resolvedFile !== outputFile) {
-      const alreadyResized = await readIfExists(resolvedFile);
-      if (alreadyResized) return alreadyResized;
-    }
+    // Never upscale — a source narrower than the requested bucket is written
+    // out at its own width — but always cache under the size that was ASKED
+    // for. Naming the file after whichever bucket happened to match the
+    // computed width meant a request for "small" against, say, a 900px source
+    // wrote medium.jpg while the caller went on to read small.jpg: every
+    // image between 800px and 1200px wide failed to render a thumbnail.
+    const requestedWidth = SIZE_MAP[size] || SIZE_MAP.medium;
+    const finalWidth = width ? Math.min(requestedWidth, width) : requestedWidth;
 
     const buffer = await sharp(originalFile)
       .resize(finalWidth)
       .toFormat(ext, { quality: 80 }) // Optimize while preserving quality
       .toBuffer();
 
-    await fsp.writeFile(resolvedFile, buffer); // Save resized version
+    await fsp.writeFile(outputFile, buffer); // Save resized version
 
     return buffer;
   } catch (error) {

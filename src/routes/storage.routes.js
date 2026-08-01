@@ -289,8 +289,11 @@ router.get("/:fileId/:filename", async (req, res, next) => {
       try {
         await getResizedImage(file.dir, file.ext, size);
       } catch (error) {
+        // Serve the original rather than 404: a thumbnail that cannot be
+        // generated (unusual encoding, sharp unable to read the source) should
+        // still display, just unresized.
         Logger.error("Image resize failed: " + error.message, { fileId, size });
-        return res.status(404).json({ message: "File not found!" });
+        size = `org`;
       }
     } else size = `org`;
 

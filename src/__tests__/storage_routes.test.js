@@ -265,7 +265,7 @@ describe("Storage Routes", () => {
       expect(getResizedImage).not.toHaveBeenCalled();
     });
 
-    it("should return 404 when image resizing fails", async () => {
+    it("should fall back to the original when image resizing fails", async () => {
       getStorageFile.mockResolvedValue({
         name: "photo",
         ext: "jpg",
@@ -277,7 +277,28 @@ describe("Storage Routes", () => {
       const res = await request(createApp()).get(
         `/${VALID_FILE_ID}/photo.jpg?size=small`
       );
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
+      expect(res.headers["x-sent-file"]).toMatch(/org\.jpg$/);
+    });
+
+    // The route reads back `${size}.${ext}` after the resize, so the resizer
+    // has to write the size it was asked for — caching under a different
+    // bucket left every 800–1199px-wide image serving a file that never
+    // existed.
+    it("serves the size that was requested after a successful resize", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "photo",
+        ext: "jpg",
+        dir: "data/storage/testproject/abc123",
+        isPublic: true,
+      });
+      isImg.mockReturnValue(true);
+      getResizedImage.mockResolvedValue(Buffer.from("resized"));
+      const res = await request(createApp()).get(
+        `/${VALID_FILE_ID}/photo.jpg?size=small`
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers["x-sent-file"]).toMatch(/small\.jpg$/);
     });
   });
 
