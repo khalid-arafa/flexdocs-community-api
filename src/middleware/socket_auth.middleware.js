@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const {
   systemDatabaseName,
   systemProjectCode,
@@ -5,8 +6,29 @@ const {
   authCollectionName,
 } = require("../constants");
 const { getDocument } = require("../core/db_service");
-const { verifyToken } = require("../utils/encryptions");
+const { verifyToken, decodeExpiredToken } = require("../utils/encryptions");
+const { hashProjectToken } = require("../utils/helper");
 const Logger = require("../utils/logger");
+
+// Is this exact token still a registered credential on the project?
+//
+// This is the same check projectApiAuth performs for REST: the stored
+// `projectTokenHash` is the authority on whether a project token is live, and
+// deleting the credential in the dashboard revokes it. Constant-time compare,
+// and a credential minted before hashes were stored simply doesn't match.
+function tokenMatchesStoredCredential(project, projectToken) {
+  if (!Array.isArray(project?.credentials)) return false;
+  const incomingBuf = Buffer.from(hashProjectToken(projectToken), "hex");
+  return project.credentials.some((credential) => {
+    const storedHash = credential?.creds?.projectTokenHash;
+    if (!storedHash) return false;
+    const storedBuf = Buffer.from(storedHash, "hex");
+    return (
+      storedBuf.length === incomingBuf.length &&
+      crypto.timingSafeEqual(storedBuf, incomingBuf)
+    );
+  });
+}
 
 async function socketAuth(socket, next) {
   const projectToken =
@@ -19,7 +41,28 @@ async function socketAuth(socket, next) {
     socket.handshake.auth?.userToken || socket.handshake.query?.userToken;
 
   try {
-    const decodedProjectToken = verifyToken(projectToken);
+    let decodedProjectToken = verifyToken(projectToken);
+
+    // An expired project token is not automatically dead here.
+    //
+    // REST (projectApiAuth) authenticates a project token by SHA-256 hashing it
+    // and comparing against the project's stored `projectTokenHash` — it never
+    // decodes the JWT, so `exp` has never been enforced on that path. Sockets
+    // were the only place it was, which meant a project token silently kept
+    // working for every REST call while realtime and file uploads broke the
+    // moment it aged out. Nothing surfaces that to the client: socket.io just
+    // buffers the emit, so an upload sits at 0% forever.
+    //
+    // So fall back to the same authority REST uses. The signature is still
+    // verified (`decodeExpiredToken` only relaxes `exp`), and an expired token
+    // must additionally prove it is a *currently registered* credential on the
+    // project — a strictly stronger requirement than an unexpired one faces.
+    // Deleting or rotating the credential in the dashboard still revokes it.
+    const expired = Boolean(decodedProjectToken?.expired);
+    if (expired) {
+      decodedProjectToken = decodeExpiredToken(projectToken);
+    }
+
     // A real project token is signed as { projectId, name, code }. Require a
     // non-empty string `code`: without this, any other valid JWT (e.g. a user
     // token, which has no `code`) passes verify, and the lookup below would run
@@ -28,10 +71,15 @@ async function socketAuth(socket, next) {
     // holds no credential for.
     if (
       !decodedProjectToken ||
-      decodedProjectToken.expired ||
       typeof decodedProjectToken.code !== "string" ||
       decodedProjectToken.code.length === 0
     )
+      return next(new Error("Authentication error: Invalid project token"));
+
+    // `_system` is synthesised below rather than read from Mongo, so it has no
+    // stored credential hash to fall back on. `exp` is the only revocation
+    // signal it has — keep enforcing it there.
+    if (expired && decodedProjectToken.code === "_system")
       return next(new Error("Authentication error: Invalid project token"));
 
     let project;
@@ -54,6 +102,11 @@ async function socketAuth(socket, next) {
 
     if (!project || !project.isActive)
       return next(new Error("Authentication error: Project not found"));
+
+    // The hash check that lets an expired token through. Deliberately after the
+    // project lookup — the stored hashes live on the project document.
+    if (expired && !tokenMatchesStoredCredential(project, projectToken))
+      return next(new Error("Authentication error: Invalid project token"));
 
     socket.project = project;
 
