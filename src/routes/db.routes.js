@@ -17,8 +17,10 @@ const {
   dropCollection,
   renameCollection,
 } = require("../core/db_service");
-const { getIO } = require("../sockets/io_connect");
-const { sendUpdateCollectionStreamEvent } = require("../sockets/db.sockets");
+const {
+  sendUpdateCollectionStreamEvent,
+  sendUpdateDocumentStreamEvent,
+} = require("../sockets/db.sockets");
 const {
   collectionMiddleware,
   documentMiddleware,
@@ -34,8 +36,6 @@ const {
   updateManySchema,
   deleteManySchema,
 } = require("../utils/schemas");
-
-const io = getIO();
 
 // Listing every collection (names + counts) is schema introspection — an
 // admin/dashboard operation. Gate it behind the DB admin like rename/drop;
@@ -87,6 +87,7 @@ router.post("/collections/new", zodValidate(createCollectionSchema), async (req,
         colPath,
         action: "add",
         data: [{ name, documentsCount: 0 }],
+        project: req.project,
       });
       return res.status(201).json({ success: true });
     }
@@ -120,8 +121,8 @@ router.put("/collections/:col/rename", zodValidate(renameCollectionSchema), asyn
       limit: 1,
     });
     const renamedCol = collectionResults.collections[0] || { name: newName, documentsCount: 0 };
-    sendUpdateCollectionStreamEvent({ colPath, action: "delete", data: [{ name: oldName }] });
-    sendUpdateCollectionStreamEvent({ colPath, action: "add", data: [renamedCol] });
+    sendUpdateCollectionStreamEvent({ colPath, action: "delete", data: [{ name: oldName }], project: req.project });
+    sendUpdateCollectionStreamEvent({ colPath, action: "add", data: [renamedCol], project: req.project });
 
     return res.status(200).json({ success: true });
   } catch (error) {
@@ -216,6 +217,7 @@ router.post("/:col/add", collectionMiddleware, async (req, res) => {
         colPath: `${req.project.code}/collections`,
         action: "add",
         data: [{ name: req.params.col, documentsCount: 1 }],
+        project: req.project,
       });
     } else {
       const { name, documentsCount } = collectionResults.collections[0];
@@ -223,6 +225,7 @@ router.post("/:col/add", collectionMiddleware, async (req, res) => {
         colPath: `${req.project.code}/collections`,
         action: "update",
         data: [{ name, documentsCount: documentsCount + 1 }],
+        project: req.project,
       });
     }
 
@@ -231,6 +234,7 @@ router.post("/:col/add", collectionMiddleware, async (req, res) => {
       colPath,
       action: "add",
       data: [{ _id, ...req.body, createdAt: new Date() }],
+      project: req.project,
     });
 
     return res.status(200).json({ _id });
@@ -289,6 +293,7 @@ router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req
         colPath: `${req.project.code}/collections`,
         action: "delete",
         data: [{ name: req.params.col }],
+        project: req.project,
       });
       return res
         .status(200)
@@ -307,7 +312,12 @@ router.get("/:col/:id", documentMiddleware, async (req, res) => {
   if (!ObjectId.isValid(id))
     return res.status(400).json({ message: "id is not valid" });
   try {
-    const doc = await getDocument({
+    // documentMiddleware already fetched this exact document (same {_id: id}
+    // query) to run the rules check, and left it on req.document. Reuse it
+    // instead of hitting Mongo again. req.document is only ever undefined
+    // here on the req.isDbAdmin/req.byAdmin path, where documentMiddleware
+    // skips the fetch entirely — fall back to fetching it ourselves then.
+    const doc = req.document !== undefined ? req.document : await getDocument({
       userId: req.project.userId,
       projectCode: req.project.code,
       collectionName: col,
@@ -351,10 +361,15 @@ router.put("/:col/:id", documentMiddleware, async (req, res) => {
       collectionName: col,
       query: { _id: id },
     });
-    io.to(id).emit(id, { action: "update", doc });
+    // watch-doc joins a room named after the raw document id, not tracked in
+    // watchingCollectionsUpdates, so this can't reuse the per-socket watch
+    // registry sendUpdateCollectionStreamEvent walks below — see
+    // sendUpdateDocumentStreamEvent's own comment in db.sockets.js for how it
+    // handles the flag.
+    sendUpdateDocumentStreamEvent({ project: req.project, col, room: id, action: "update", doc });
 
     const colPath = `${req.project.code}/${req.params.col}`;
-    sendUpdateCollectionStreamEvent({ colPath, action: "update", data: [doc] });
+    sendUpdateCollectionStreamEvent({ colPath, action: "update", data: [doc], project: req.project });
 
     return res.status(result.code).json({ message: result.message });
   } catch (error) {
@@ -369,7 +384,10 @@ router.delete("/:col/:id", documentMiddleware, async (req, res) => {
   if (!ObjectId.isValid(id))
     return res.status(400).json({ message: "id is not valid" });
   try {
-    const doc = await getDocument({
+    // Same dedup as GET /:col/:id above — reuse the document documentMiddleware
+    // already fetched for the rules check; only re-fetch when it's undefined
+    // (the req.isDbAdmin/req.byAdmin path, where that fetch was skipped).
+    const doc = req.document !== undefined ? req.document : await getDocument({
       userId: req.project.userId,
       projectCode: req.project.code,
       collectionName: col,
@@ -387,11 +405,12 @@ router.delete("/:col/:id", documentMiddleware, async (req, res) => {
     if (query.deletedCount > 0) {
       result = { code: 200, message: "Document was deleted successfully" };
       const colPath = `${req.project.code}/${req.params.col}`;
-      io.to(id).emit(id, { action: "delete", doc });
+      sendUpdateDocumentStreamEvent({ project: req.project, col, room: id, action: "delete", doc });
       sendUpdateCollectionStreamEvent({
         colPath,
         action: "delete",
         data: [doc],
+        project: req.project,
       });
 
       const collectionResults = await getCollectionsList({
@@ -404,6 +423,7 @@ router.delete("/:col/:id", documentMiddleware, async (req, res) => {
         colPath: `${req.project.code}/collections`,
         action: "update",
         data: [collectionResults.collections[0]],
+        project: req.project,
       });
     }
 

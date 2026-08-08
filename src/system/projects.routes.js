@@ -15,7 +15,7 @@ const {
   systemProjectCollectionName,
   uploadsPath,
 } = require("../constants");
-const { projectApiAuth } = require("../middleware/project_auth.middleware");
+const { projectApiAuth, invalidateProjectCache } = require("../middleware/project_auth.middleware");
 const router = express.Router();
 const fs = require("fs");
 const { generateProjectCreds } = require("../utils/helper");
@@ -122,6 +122,21 @@ router.post("/:projectCode", projectApiAuth, async (req, res) => {
 // Fields a client is allowed to change on a project. Whitelisting prevents
 // mass assignment of server-managed fields like userId, code, credentials,
 // projectToken hashes, or _id via an unfiltered req.body.
+//
+// realtimePerDocCheck (K2): per-project opt-in for re-running dbRules against
+// each document, per subscriber, at the moment a realtime update is pushed —
+// not just once at watch-col-updates/watch-doc subscribe time. Lives as a
+// plain top-level boolean rather than inside `dbRules` deliberately: dbRules
+// has its OWN dedicated validated write path (PUT /:projectCode/db/rules,
+// guarded by validateDbRulesStructure, which requires every key to match
+// `/collectionName` or `/collectionName/[id]` — a dunder flag key would fail
+// that pattern) while also being writable unvalidated through this generic
+// endpoint. Nesting the flag inside dbRules would make it valid through one
+// write path and rejected through the other. A sibling field next to
+// isActive/isPublic has one write path, needs no schema change to
+// validateDbRulesStructure, and reads with the same
+// `project.realtimePerDocCheck === true` check everywhere. Undefined on every
+// project that has never set it, which is exactly "defaults to off".
 const PROJECT_UPDATABLE_FIELDS = [
   "name",
   "description",
@@ -131,6 +146,7 @@ const PROJECT_UPDATABLE_FIELDS = [
   "dbRules",
   "storageRules",
   "authRules",
+  "realtimePerDocCheck",
 ];
 
 router.put("/:projectCode", projectApiAuth, async (req, res) => {
@@ -156,6 +172,12 @@ router.put("/:projectCode", projectApiAuth, async (req, res) => {
       type: "update",
       updateData,
     });
+    // Bust the cache unconditionally right after the write — even a no-op
+    // write (matchedCount 0, e.g. the project was already in this state) is
+    // harmless to invalidate, whereas skipping it on a real update would
+    // leave the next request reading a stale cached document for up to the
+    // TTL.
+    invalidateProjectCache(req.params.projectCode);
     return res.status(200).json({ success: result.matchedCount > 0 });
   } catch (error) {
     Logger.error(error.message, { stack: error.stack });
@@ -187,6 +209,7 @@ router.delete("/:projectCode", projectApiAuth, async (req, res) => {
       collectionName: systemProjectCollectionName,
       query,
     });
+    invalidateProjectCache(projectCode);
     if (result.deletedCount) {
       await dropDatabase({
         userId: req.project.userId,
@@ -266,6 +289,7 @@ router.post("/:projectCode/creds", projectApiAuth, zodValidate(createCredentialS
         credentials: [...project.credentials, newCreds],
       },
     });
+    invalidateProjectCache(req.project.code);
 
     if (result.modifiedCount == 0)
       throw Error("A problem has happened while generating your credentials");
@@ -308,6 +332,7 @@ router.delete("/:projectCode/creds/:id", projectApiAuth, async (req, res) => {
         ],
       },
     });
+    invalidateProjectCache(req.project.code);
 
     if (result.modifiedCount == 0)
       throw Error("A problem has happened while genreating your credentials");
@@ -354,6 +379,7 @@ router.put("/:projectCode/db/rules", projectApiAuth, async (req, res) => {
       query: { code: req.project.code },
       updateData: { dbRules: req.body },
     });
+    invalidateProjectCache(req.project.code);
     let result = { message: "Project database rules modified successfully" };
     if (query.matchedCount > 0)
       result = { message: "No changes made, but document exists" };
@@ -387,6 +413,7 @@ router.put("/:projectCode/storage/rules", projectApiAuth, async (req, res) => {
       query: { code: req.project.code },
       updateData: { storageRules: req.body },
     });
+    invalidateProjectCache(req.project.code);
     let result = { message: "Project storage rules modified successfully" };
     if (query.matchedCount > 0)
       result = { message: "No changes made, but document exists" };
@@ -430,6 +457,7 @@ router.put("/:projectCode/auth/rules", projectApiAuth, async (req, res) => {
       query: { code: req.project.code },
       updateData: { authRules: req.body },
     });
+    invalidateProjectCache(req.project.code);
     let result = { message: "Project auth rules modified successfully" };
     if (query.matchedCount > 0)
       result = { message: "No changes made, but document exists" };

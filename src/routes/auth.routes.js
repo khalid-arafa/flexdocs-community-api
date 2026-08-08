@@ -18,7 +18,7 @@ const {
 } = require("../core/db_service");
 
 const { sendAuthSocketEvent } = require("../sockets/auth.sockets.js");
-const { hashPassword } = require("../utils/encryptions.js");
+const { hashPassword, getToken } = require("../utils/encryptions.js");
 const { isStrongPassword, isValidEmail } = require("../utils/validators.js");
 const { checkDbUserApiAuth } = require("../middleware/user_auth.middleware.js");
 const { getPublicBaseUrl } = require("../utils/helper.js");
@@ -222,6 +222,47 @@ router.get("/current-user", authLimiter, checkDbUserApiAuth, async (req, res) =>
     return res.status(401).json({ message: "Invalid or expired token" });
   const account = { ...req.sender, uid: req.sender._id.toString() };
   return res.status(200).json(account);
+});
+
+// Revoke every session for the signed-in user by bumping tokenVersion. There
+// is no denylist/session store backing FlexDocs JWTs (30-day expiry, pure
+// sign/verify — see utils/encryptions.js), so this coarse counter is the only
+// revocation mechanism: user_auth.middleware.js / socket_auth.middleware.js /
+// db.sockets.js all reject a token whose `tokenVersion` claim no longer
+// matches the stored value. Deliberately invalidates the very token used to
+// call this endpoint too — "log out everywhere" has no carve-out for the
+// caller's own session, that's the expected behaviour, not a bug.
+router.post("/revoke-tokens", authLimiter, checkDbUserApiAuth, async (req, res) => {
+  try {
+    if (!req.sender) throw new Error("No token was provided");
+    const nextVersion = (req.sender.tokenVersion || 0) + 1;
+    const result = await updateDocument({
+      userId: req.project.userId,
+      projectCode: req.project.code,
+      collectionName: authCollectionName,
+      query: { _id: req.sender._id },
+      updateData: { tokenVersion: nextVersion },
+    });
+    return res.status(200).json({ success: result.modifiedCount > 0 });
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
+});
+
+// Issue a fresh 30-day token for the caller. checkDbUserApiAuth only ever
+// sets req.sender for a token that already passed full verification —
+// signature, project binding, AND the tokenVersion check above — so
+// req.sender being present is sufficient proof the presented token is
+// currently valid; nothing further to re-check here.
+router.post("/refresh-token", authLimiter, checkDbUserApiAuth, async (req, res) => {
+  if (!req.sender)
+    return res.status(401).json({ message: "Invalid or expired token" });
+  const token = getToken({
+    userId: req.sender._id,
+    project: req.project.code,
+    tokenVersion: req.sender.tokenVersion || 0,
+  });
+  return res.status(200).json({ token });
 });
 
 // admin

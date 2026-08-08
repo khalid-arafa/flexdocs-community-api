@@ -122,7 +122,15 @@ async function loginWithEmailAndPassword({
     }).catch((err) => Logger.error("Failed to rehash legacy password", { stack: err.stack }));
   }
 
-  user.token = getToken({ userId: user._id, project: projectCode });
+  // tokenVersion is embedded so a later /revoke-tokens call (which bumps the
+  // stored value) instantly invalidates every token minted before it — see
+  // the version check in user_auth.middleware.js / socket_auth.middleware.js.
+  // Default to 0 for accounts created before this field existed.
+  user.token = getToken({
+    userId: user._id,
+    project: projectCode,
+    tokenVersion: user.tokenVersion || 0,
+  });
   user.uid = user._id.toString();
   delete user._id;
   delete user.password;
@@ -177,7 +185,13 @@ async function anonymousLogin(userId, projectCode, { name, avatar }) {
     createdAt: new Date(),
   });
 
-  user.token = getToken({ userId: result.insertedId, project: projectCode });
+  // Freshly created — no tokenVersion field yet, so it defaults to 0 (see the
+  // comment in loginWithEmailAndPassword above).
+  user.token = getToken({
+    userId: result.insertedId,
+    project: projectCode,
+    tokenVersion: user.tokenVersion || 0,
+  });
   user.uid = result.insertedId.toString();
   return user;
 }

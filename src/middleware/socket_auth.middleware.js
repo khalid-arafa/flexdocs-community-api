@@ -126,7 +126,14 @@ async function socketAuth(socket, next) {
           collectionName: authCollectionName,
           query: { _id: decodedUserToken.userId },
         });
-        socket.sender = sender;
+        // Revocation check, mirroring user_auth.middleware.js: /revoke-tokens
+        // bumps the stored tokenVersion, and a mismatch here means the token
+        // was issued before that revocation. Absent claim/field both default
+        // to 0 so pre-existing tokens keep authenticating unchanged.
+        const tokenVersion = decodedUserToken.tokenVersion || 0;
+        if (sender && (sender.tokenVersion || 0) === tokenVersion) {
+          socket.sender = sender;
+        }
       }
     }
 

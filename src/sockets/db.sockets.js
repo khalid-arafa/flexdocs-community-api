@@ -7,7 +7,9 @@ const {
   socketDocGuard,
   socketColGuard,
   socketAdminGuard,
+  isAdminSocket,
 } = require("../middleware/db_rules.middleware");
+const DbRulesService = require("../core/db_rules_service");
 
 // socketId → Map<watchKey, { colPath, query }>
 //
@@ -83,6 +85,13 @@ function dbSockets(io) {
         // tokens are signed as { userId, project } — match that field, not _id
         query: { _id: decodedUserToken.userId },
       });
+      // Revocation check, mirroring socket_auth.middleware.js: a mismatch
+      // between the token's tokenVersion claim and the user's current stored
+      // value means the token was invalidated by a later /revoke-tokens call.
+      // Treat it exactly like the invalid-token cases above and leave
+      // socket.sender untouched. Absent claim/field both default to 0.
+      const tokenVersion = decodedUserToken.tokenVersion || 0;
+      if (!sender || (sender.tokenVersion || 0) !== tokenVersion) return;
       socket.sender = sender;
     });
 
@@ -184,9 +193,68 @@ function matchesQuery(doc, query) {
   });
 }
 
-async function sendUpdateCollectionStreamEvent({ colPath, action, data }) {
+/**
+ * Per-socket visibility check for realtime pushes (K2: opt-in per-document
+ * dbRules re-check on push — see project.realtimePerDocCheck in
+ * system/projects.routes.js). Shared by sendUpdateCollectionStreamEvent and
+ * sendUpdateDocumentStreamEvent below so both pushes apply one rule.
+ *
+ * Admin sockets (the dashboard) always see the full batch — the same bypass
+ * socketColGuard/socketDocGuard apply at subscribe time (db_rules.middleware.js),
+ * kept in sync here so turning this flag on can never hide data from a
+ * project's own admin dashboard, only from non-admin subscribers.
+ *
+ * For everyone else, each document is re-evaluated against the project's
+ * CURRENT dbRules at the moment of push rather than only at subscribe time,
+ * so a rule edit — or a document mutation that flips a JEXL predicate over
+ * `doc`/`user` — takes effect on the very next push instead of waiting for
+ * the client to unwatch/rewatch.
+ *
+ * Fails closed: DbRulesService.check() already denies on internal error, and
+ * this try/catch extends that guarantee to the admin lookup itself — any
+ * unexpected failure here must result in NOT sending, never in sending
+ * unfiltered.
+ */
+async function filterVisibleDocsForSocket({ liveSocket, rulesService, col, docs }) {
+  try {
+    if (await isAdminSocket(liveSocket)) return docs;
+    const results = await Promise.all(
+      docs.map((doc) =>
+        rulesService.check({
+          action: "read",
+          path: `/${col}/${doc && doc._id}`,
+          user: liveSocket.sender || null,
+          doc,
+        }),
+      ),
+    );
+    return docs.filter((_, i) => results[i]);
+  } catch (error) {
+    Logger.error("filterVisibleDocsForSocket error: " + error.message, { stack: error.stack });
+    return [];
+  }
+}
+
+async function sendUpdateCollectionStreamEvent({ colPath, action, data, project }) {
   const docs = Array.isArray(data) ? data : [data];
   if (docs.length === 0) return;
+
+  // Opt-in, default OFF (project.realtimePerDocCheck is undefined on every
+  // project that hasn't explicitly turned it on). Off keeps the loop below
+  // byte-for-byte identical to the pre-K2 behavior — no per-socket admin
+  // lookup or rule evaluation on every push for projects that never asked
+  // for this, so the common case doesn't get slower.
+  const perDocCheckEnabled = Boolean(project && project.realtimePerDocCheck);
+  const rulesService = perDocCheckEnabled ? new DbRulesService(project.dbRules) : null;
+  // colPath is always `${project.code}/${col}` (see subscribe() and its
+  // callers below) or `${project.code}/collections` for the schema-listing
+  // pseudo-collection — strip the project prefix to recover the rule path
+  // segment. watch-collections is admin-only at subscribe time (guarded by
+  // socketAdminGuard), so a non-admin ever reaching that colPath here would
+  // already be an upstream bug; this path only matters for its documents to
+  // fail closed rather than throw if that ever happens.
+  const col = perDocCheckEnabled ? colPath.slice(project.code.length + 1) : null;
+  const io = getIO();
 
   for (const socketId of Object.keys(watchingCollectionsUpdates)) {
     const watches = [];
@@ -202,22 +270,72 @@ async function sendUpdateCollectionStreamEvent({ colPath, action, data }) {
     // One socket may hold several watches on the same collection under
     // different filters; they share a single event name, so it receives the
     // union of what those filters admit.
-    const visible = watches.some((watch) => !watch.query)
+    let visible = watches.some((watch) => !watch.query)
       ? docs
       : docs.filter((doc) =>
           watches.some((watch) => matchesQuery(doc, watch.query)),
         );
     if (visible.length === 0) continue;
 
-    getIO()
-      .to(socketId)
-      .emit(`update:${colPath}`, { [action]: visible });
+    if (perDocCheckEnabled) {
+      const liveSocket = io.sockets.sockets.get(socketId);
+      // Disconnected between subscribe and this push — nothing to send to.
+      if (!liveSocket) continue;
+      visible = await filterVisibleDocsForSocket({ liveSocket, rulesService, col, docs: visible });
+      if (visible.length === 0) continue;
+    }
+
+    io.to(socketId).emit(`update:${colPath}`, { [action]: visible });
+  }
+}
+
+/**
+ * Push for a single document to its `watch-doc` room (the room is named
+ * after the raw document id — see the `watch-doc` handler above).
+ *
+ * Unlike sendUpdateCollectionStreamEvent, this call site has no per-socket
+ * watch registry to consult: room membership IS the subscriber list, and
+ * Socket.IO gives no built-in way to filter what a room-wide
+ * `io.to(room).emit` delivers to individual members. So:
+ *
+ * - Flag off (default): a single room-wide emit, identical to the code this
+ *   replaced — no room-membership enumeration, no extra work.
+ * - Flag on: enumerate the room's socket ids ourselves and emit individually,
+ *   running the same admin-bypass / per-document rule re-check as the
+ *   collection-stream path, so a subscriber who has lost read access to this
+ *   exact document since calling watch-doc stops receiving it on the very
+ *   next push rather than only on its next resubscribe.
+ */
+async function sendUpdateDocumentStreamEvent({ project, col, room, action, doc }) {
+  const io = getIO();
+
+  if (!(project && project.realtimePerDocCheck)) {
+    io.to(room).emit(room, { action, doc });
+    return;
+  }
+
+  const memberIds = io.sockets.adapter.rooms.get(room);
+  if (!memberIds || memberIds.size === 0) return;
+
+  const rulesService = new DbRulesService(project.dbRules);
+  for (const socketId of memberIds) {
+    const liveSocket = io.sockets.sockets.get(socketId);
+    if (!liveSocket) continue;
+    const visible = await filterVisibleDocsForSocket({
+      liveSocket,
+      rulesService,
+      col,
+      docs: [doc],
+    });
+    if (visible.length === 0) continue;
+    io.to(socketId).emit(room, { action, doc: visible[0] });
   }
 }
 
 module.exports = {
   dbSockets,
   sendUpdateCollectionStreamEvent,
+  sendUpdateDocumentStreamEvent,
   // exported for tests
   __internals: {
     watchingCollectionsUpdates,
@@ -225,5 +343,6 @@ module.exports = {
     removeWatching,
     matchesQuery,
     watchKey,
+    filterVisibleDocsForSocket,
   },
 };

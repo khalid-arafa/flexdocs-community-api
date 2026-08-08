@@ -7,6 +7,12 @@ const reservedCollectionNames = [
   "_buckets",
   "_files",
   "_users",
+  // Collides with the admin dashboard's live schema-watch colPath
+  // (`${projectCode}/collections`, see watch-collections in db.sockets.js).
+  // A per-collection document watch on a collection literally named
+  // "collections" would register under that same colPath, so unwatching
+  // either one deletes the other's entry from watchingCollectionsUpdates.
+  "collections",
 ];
 const authCollectionName = "_users";
 const systemDatabaseName = "_system";

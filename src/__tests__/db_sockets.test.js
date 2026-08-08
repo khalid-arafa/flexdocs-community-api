@@ -9,22 +9,34 @@
 
 const mockEmit = jest.fn();
 const mockTo = jest.fn(() => ({ emit: mockEmit }));
+// socketId → fake live socket, and room → Set<socketId>, standing in for
+// Socket.IO's `io.sockets.sockets` / `io.sockets.adapter.rooms` — consulted
+// only by the K2 per-document-rule-recheck path (project.realtimePerDocCheck),
+// so pre-existing tests that never pass a `project` never touch these.
+const mockLiveSockets = new Map();
+const mockRooms = new Map();
 
 jest.mock("../sockets/io_connect", () => ({
-  getIO: () => ({ to: mockTo }),
+  getIO: () => ({
+    to: mockTo,
+    sockets: { sockets: mockLiveSockets, adapter: { rooms: mockRooms } },
+  }),
 }));
 jest.mock("../core/db_service", () => ({ getDocument: jest.fn() }));
 jest.mock("../middleware/db_rules.middleware", () => ({
   socketDocGuard: jest.fn(),
   socketColGuard: jest.fn(),
   socketAdminGuard: jest.fn(),
+  isAdminSocket: jest.fn(),
 }));
 
 const {
   sendUpdateCollectionStreamEvent,
+  sendUpdateDocumentStreamEvent,
   __internals,
 } = require("../sockets/db.sockets");
 const { socketLimits } = require("../constants");
+const { isAdminSocket } = require("../middleware/db_rules.middleware");
 
 const {
   watchingCollectionsUpdates: registry,
@@ -40,6 +52,12 @@ function reset() {
   for (const key of Object.keys(registry)) delete registry[key];
   mockEmit.mockClear();
   mockTo.mockClear();
+  mockLiveSockets.clear();
+  mockRooms.clear();
+  // Default to "not admin" so tests that exercise the per-doc-rule path don't
+  // silently bypass it by inheriting a truthy value left over from another
+  // test (clearMocks resets call history, not mockResolvedValue).
+  isAdminSocket.mockResolvedValue(null);
 }
 
 beforeEach(reset);
@@ -231,6 +249,256 @@ describe("sendUpdateCollectionStreamEvent", () => {
   it("does not emit for an empty document list", async () => {
     addWatching(registry, "s1", COL, {});
     await sendUpdateCollectionStreamEvent({ colPath: COL, action: "update", data: [] });
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+});
+
+// ─── K2: per-project, per-document realtime dbRules re-check on push ───────
+//
+// project.realtimePerDocCheck (default undefined/false — see
+// system/projects.routes.js PROJECT_UPDATABLE_FIELDS). Off must reproduce the
+// exact pre-K2 emit calls above; on, a non-admin subscriber's batch narrows
+// to whatever it can currently read, while an admin socket is unaffected.
+describe("sendUpdateCollectionStreamEvent — realtime per-document rule re-check (K2)", () => {
+  function registerLiveSocket(id, sender) {
+    mockLiveSockets.set(id, { id, sender });
+  }
+
+  it("flag off is byte-for-byte unchanged even when dbRules would deny everything", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    addWatching(registry, "s1", COL, {});
+    const project = { code: "proj1", dbRules: { "/posts": false }, realtimePerDocCheck: false };
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [{ _id: "1", ownerId: "u1" }],
+      project,
+    });
+
+    expect(mockEmit).toHaveBeenCalledWith(`update:${COL}`, {
+      update: [{ _id: "1", ownerId: "u1" }],
+    });
+    expect(isAdminSocket).not.toHaveBeenCalled();
+  });
+
+  it("omitting `project` altogether behaves identically to flag off", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    addWatching(registry, "s1", COL, {});
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [{ _id: "1", ownerId: "u1" }],
+    });
+
+    expect(mockEmit).toHaveBeenCalledWith(`update:${COL}`, {
+      update: [{ _id: "1", ownerId: "u1" }],
+    });
+  });
+
+  it("an admin socket still receives everything with the flag on, even under a deny-all rule", async () => {
+    isAdminSocket.mockResolvedValue({ _id: "admin1" });
+    registerLiveSocket("s1", undefined);
+    addWatching(registry, "s1", COL, {});
+    const project = { code: "proj1", dbRules: { "/posts": false }, realtimePerDocCheck: true };
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [
+        { _id: "1", ownerId: "u1" },
+        { _id: "2", ownerId: "u2" },
+      ],
+      project,
+    });
+
+    expect(mockEmit).toHaveBeenCalledWith(`update:${COL}`, {
+      update: [
+        { _id: "1", ownerId: "u1" },
+        { _id: "2", ownerId: "u2" },
+      ],
+    });
+  });
+
+  it("a non-admin socket with a restrictive per-doc rule stops receiving documents it can no longer read", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    addWatching(registry, "s1", COL, {});
+    const project = {
+      code: "proj1",
+      dbRules: { "/posts": { read: "doc.ownerId == user.uid" } },
+      realtimePerDocCheck: true,
+    };
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [
+        { _id: "1", ownerId: "u1" },
+        { _id: "2", ownerId: "u2" },
+      ],
+      project,
+    });
+
+    expect(mockEmit).toHaveBeenCalledWith(`update:${COL}`, {
+      update: [{ _id: "1", ownerId: "u1" }],
+    });
+  });
+
+  it("a non-admin socket with a permissive rule is unaffected", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    addWatching(registry, "s1", COL, {});
+    const project = {
+      code: "proj1",
+      dbRules: { "/posts": { read: true } },
+      realtimePerDocCheck: true,
+    };
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [
+        { _id: "1", ownerId: "u1" },
+        { _id: "2", ownerId: "u2" },
+      ],
+      project,
+    });
+
+    expect(mockEmit).toHaveBeenCalledWith(`update:${COL}`, {
+      update: [
+        { _id: "1", ownerId: "u1" },
+        { _id: "2", ownerId: "u2" },
+      ],
+    });
+  });
+
+  it("stays silent for a socket that disconnected between subscribe and this push", async () => {
+    // Deliberately not registered in mockLiveSockets.
+    addWatching(registry, "s1", COL, {});
+    const project = { code: "proj1", dbRules: { "/posts": { read: true } }, realtimePerDocCheck: true };
+
+    await sendUpdateCollectionStreamEvent({
+      colPath: COL,
+      action: "update",
+      data: [{ _id: "1", ownerId: "u1" }],
+      project,
+    });
+
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendUpdateDocumentStreamEvent (watch-doc room push, K2)", () => {
+  const ROOM = "doc1";
+
+  function registerLiveSocket(id, sender) {
+    mockLiveSockets.set(id, { id, sender });
+  }
+
+  it("flag off emits room-wide exactly like the plain io.to(room).emit(room, ...) it replaced", async () => {
+    const doc = { _id: ROOM, ownerId: "u1" };
+    await sendUpdateDocumentStreamEvent({
+      project: { code: "proj1", dbRules: {}, realtimePerDocCheck: false },
+      col: "posts",
+      room: ROOM,
+      action: "update",
+      doc,
+    });
+    expect(mockTo).toHaveBeenCalledWith(ROOM);
+    expect(mockEmit).toHaveBeenCalledWith(ROOM, { action: "update", doc });
+    expect(isAdminSocket).not.toHaveBeenCalled();
+  });
+
+  it("omitting `project` also takes the flag-off path", async () => {
+    const doc = { _id: ROOM };
+    await sendUpdateDocumentStreamEvent({ room: ROOM, action: "delete", doc });
+    expect(mockEmit).toHaveBeenCalledWith(ROOM, { action: "delete", doc });
+  });
+
+  it("flag on: an admin room member still receives the document under a deny-all rule", async () => {
+    isAdminSocket.mockResolvedValue({ _id: "admin1" });
+    registerLiveSocket("s1", undefined);
+    mockRooms.set(ROOM, new Set(["s1"]));
+    const doc = { _id: ROOM, ownerId: "u2" };
+
+    await sendUpdateDocumentStreamEvent({
+      project: { code: "proj1", dbRules: { "/posts": false }, realtimePerDocCheck: true },
+      col: "posts",
+      room: ROOM,
+      action: "update",
+      doc,
+    });
+
+    expect(mockTo).toHaveBeenCalledWith("s1");
+    expect(mockEmit).toHaveBeenCalledWith(ROOM, { action: "update", doc });
+  });
+
+  it("flag on: a non-admin member who can no longer read the doc gets nothing", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    mockRooms.set(ROOM, new Set(["s1"]));
+
+    await sendUpdateDocumentStreamEvent({
+      project: {
+        code: "proj1",
+        dbRules: { "/posts": { read: "doc.ownerId == user.uid" } },
+        realtimePerDocCheck: true,
+      },
+      col: "posts",
+      room: ROOM,
+      action: "update",
+      doc: { _id: ROOM, ownerId: "u2" },
+    });
+
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it("flag on: a non-admin member with a permissive rule still receives the document", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    mockRooms.set(ROOM, new Set(["s1"]));
+    const doc = { _id: ROOM, ownerId: "u1" };
+
+    await sendUpdateDocumentStreamEvent({
+      project: { code: "proj1", dbRules: { "/posts": { read: true } }, realtimePerDocCheck: true },
+      col: "posts",
+      room: ROOM,
+      action: "update",
+      doc,
+    });
+
+    expect(mockTo).toHaveBeenCalledWith("s1");
+    expect(mockEmit).toHaveBeenCalledWith(ROOM, { action: "update", doc });
+  });
+
+  it("flag on: filters per room member — one still sees the doc, the other doesn't", async () => {
+    registerLiveSocket("s1", { uid: "u1" });
+    registerLiveSocket("s2", { uid: "u2" });
+    mockRooms.set(ROOM, new Set(["s1", "s2"]));
+    const doc = { _id: ROOM, ownerId: "u1" };
+
+    await sendUpdateDocumentStreamEvent({
+      project: {
+        code: "proj1",
+        dbRules: { "/posts": { read: "doc.ownerId == user.uid" } },
+        realtimePerDocCheck: true,
+      },
+      col: "posts",
+      room: ROOM,
+      action: "update",
+      doc,
+    });
+
+    expect(mockTo.mock.calls.map(([id]) => id)).toEqual(["s1"]);
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("flag on: does nothing when the room has no members", async () => {
+    await sendUpdateDocumentStreamEvent({
+      project: { code: "proj1", dbRules: {}, realtimePerDocCheck: true },
+      col: "posts",
+      room: "empty-room",
+      action: "update",
+      doc: { _id: "empty-room" },
+    });
     expect(mockEmit).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,10 @@ describe("constants.js", () => {
       }
     });
 
+    it('should contain "collections" (collides with the dashboard\'s live collections-list watch colPath)', () => {
+      expect(constants.reservedCollectionNames).toContain("collections");
+    });
+
     it("should include _users (authCollectionName)", () => {
       expect(constants.reservedCollectionNames).toContain(constants.authCollectionName);
     });

@@ -41,7 +41,15 @@ async function checkDbUserApiAuth(req, res, next) {
           lockedUntil: 0,
         },
       });
-      if (user) {
+      // Revocation check: /revoke-tokens bumps the user's stored tokenVersion,
+      // which has no denylist or session store behind it — this comparison IS
+      // the revocation mechanism. A token minted before this field existed
+      // carries no `tokenVersion` claim at all, so it must be treated as
+      // version 0; a user document from before this change is missing the
+      // field too, same default. That keeps every currently-valid token
+      // working unchanged until someone explicitly revokes for that user.
+      const tokenVersion = decodedToken.tokenVersion || 0;
+      if (user && (user.tokenVersion || 0) === tokenVersion) {
         req.sender = user;
       }
     }

@@ -42,20 +42,34 @@ module.exports.collectionMiddleware = (req, res, next) => {
   return middleware(req, res, next);
 };
 
-module.exports.documentMiddleware = (req, res, next) => {
+module.exports.documentMiddleware = async (req, res, next) => {
   if (!validateCollectionParam(req, res)) return;
   if (req.isDbAdmin || req.byAdmin) return next();
+
+  // Fetched once, here, and stashed on req.document so the GET/DELETE
+  // /:col/:id handlers can reuse it instead of re-fetching the same _id right
+  // after this middleware ran. This also has to be resolved BEFORE we hand
+  // getDoc to DbRulesService.middleware(): that helper reads getDoc(req)
+  // synchronously (see its default `getDoc = (req) => req.doc || null`), so
+  // an async getDoc there would race the rule check against an unresolved
+  // promise instead of the real document. Fetching up front avoids that.
+  try {
+    req.document = await getDocument({
+      userId: req.project.userId,
+      projectCode: req.project.code,
+      collectionName: req.params.col,
+      query: { _id: req.params.id },
+    });
+  } catch (error) {
+    Logger.error(error.message, { stack: error.stack });
+    return res.status(500).json({ message: error.message });
+  }
+
   const service = new DbRulesService(req.project.dbRules);
   const middleware = service.middleware({
     getAction: (req) => service.getAction(req),
     getUser: (req) => req.sender || {},
-    getDoc: async (req) =>
-      await getDocument({
-        userId: req.project.userId,
-        projectCode: req.project.code,
-        collectionName: req.params.col,
-        query: { _id: req.params.id },
-      }),
+    getDoc: (req) => req.document,
   });
   return middleware(req, res, next);
 };
@@ -127,7 +141,80 @@ module.exports.bulkMiddleware = async (req, res, next) => {
 
 // sockets
 //
+
+// Pure admin-identification check for a socket, factored out of
+// socketAdminGuard so it can also gate socketColGuard/socketDocGuard below.
+//
+// This is the socket-side equivalent of REST's `req.isDbAdmin || req.byAdmin`
+// (see collectionMiddleware/documentMiddleware above): a way to ask "is this
+// caller the admin dashboard" without going through a specific event's guard.
+// It exists because the dashboard's realtime watches (watch-col-updates,
+// watch-doc) carry NO ordinary user identity by any path — the dashboard
+// sends handshake.auth = { projectToken, token }, but socketAuth
+// (socket_auth.middleware.js) only ever reads handshake.auth.userToken, a key
+// the dashboard never sends. So socket.sender is always undefined for these
+// events regardless of project, and running them through DbRulesService with
+// user=null against a default-deny project silently breaks the dashboard's
+// live view. Only genuinely-admin sockets should bypass rules at all — this
+// function is how callers find out.
+//
+// Deliberately side-effect-free: no emit, no next(), no mutation of `socket`.
+// Returns the resolved SYSTEM auth sender when the token is valid, active,
+// admin/superadmin, and owns the socket's project; null in every other case
+// (missing token, expired/invalid token, wrong role, wrong project, or any
+// lookup error — all fail closed to "not admin").
+//
+// Cheap for ordinary SDK clients: they never populate handshake.auth.token
+// (only projectToken/userToken), so this short-circuits before touching the
+// DB.
+async function isAdminSocket(socket) {
+  try {
+    const { projectToken, token } = socket.handshake.auth || {};
+    if (!projectToken || !token) return null;
+
+    const decoded = verifyToken(token);
+    if (!decoded || decoded.expired) return null;
+
+    const sender = await getDocument({
+      userId: systemDatabaseName,
+      projectCode: systemProjectCode,
+      collectionName: authCollectionName,
+      query: { _id: decoded.userId },
+    });
+
+    const isAdmin =
+      sender &&
+      sender.isActive !== false &&
+      Array.isArray(sender.roles) &&
+      sender.roles.some((r) => r === "admin" || r === "superadmin");
+    if (!isAdmin) return null;
+
+    // Ownership: the admin must own the project being streamed. Single-admin
+    // deployments always match; this is defense-in-depth for multi-admin setups.
+    if (
+      socket.project.code !== systemProjectCode &&
+      socket.project.userId &&
+      sender._id.toString() !== socket.project.userId.toString()
+    ) {
+      return null;
+    }
+
+    return sender;
+  } catch (error) {
+    Logger.error("isAdminSocket error: " + error.message, { stack: error.stack });
+    return null;
+  }
+}
+module.exports.isAdminSocket = isAdminSocket;
+
 module.exports.socketDocGuard = async (socket, data, next) => {
+  // Admin bypass, mirroring documentMiddleware's `req.isDbAdmin || req.byAdmin`
+  // on the REST side (see top of file). Without this, the admin dashboard's
+  // watch-doc on a normal project runs full dbRules with user=null and only
+  // ever worked by relying on rules permissive enough to allow a null user —
+  // this ADDS access for genuine admin sockets, it closes nothing.
+  if (await isAdminSocket(socket)) return next();
+
   const service = new DbRulesService(socket.project.dbRules);
   const ok = await service.check({
     action: "read",
@@ -145,6 +232,9 @@ module.exports.socketDocGuard = async (socket, data, next) => {
 };
 
 module.exports.socketColGuard = async (socket, colName, next) => {
+  // Same admin bypass as socketDocGuard above — see its comment.
+  if (await isAdminSocket(socket)) return next();
+
   const service = new DbRulesService(socket.project.dbRules);
   const ok = await service.check({
     action: "read",
@@ -165,51 +255,21 @@ module.exports.socketColGuard = async (socket, colName, next) => {
 //
 // The dashboard authenticates with the SYSTEM admin JWT (signed project:_system),
 // so we verify the token against the SYSTEM accounts collection and require an
-// admin/superadmin role, plus ownership of the watched project.
+// admin/superadmin role, plus ownership of the watched project. The actual
+// verification lives in isAdminSocket() above (shared with the bypass in
+// socketColGuard/socketDocGuard); this wrapper only owns the emit/next control
+// flow and the more specific "Missing token or project token" message for the
+// cheap pre-check, so existing callers (watch-collections, watch-accounts) see
+// no behavior change from the extraction.
 module.exports.socketAdminGuard = async (socket, next) => {
-  try {
-    const { projectToken, token } = socket.handshake.auth || {};
-    if (!projectToken || !token) {
-      return socket.emit("error", "Missing token or project token");
-    }
-
-    const decoded = verifyToken(token);
-    if (!decoded || decoded.expired) {
-      return socket.emit("error", "Unauthorized");
-    }
-
-    const sender = await getDocument({
-      userId: systemDatabaseName,
-      projectCode: systemProjectCode,
-      collectionName: authCollectionName,
-      query: { _id: decoded.userId },
-    });
-
-    const isAdmin =
-      sender &&
-      sender.isActive !== false &&
-      Array.isArray(sender.roles) &&
-      sender.roles.some((r) => r === "admin" || r === "superadmin");
-    if (!isAdmin) {
-      return socket.emit("error", "Unauthorized");
-    }
-
-    // Ownership: the admin must own the project being streamed. Single-admin
-    // deployments always match; this is defense-in-depth for multi-admin setups.
-    if (
-      socket.project.code !== systemProjectCode &&
-      socket.project.userId &&
-      sender._id.toString() !== socket.project.userId.toString()
-    ) {
-      return socket.emit("error", "Unauthorized");
-    }
-
-    socket.sender = sender;
-    next();
-  } catch (error) {
-    Logger.error("socketAdminGuard error: " + error.message, {
-      stack: error.stack,
-    });
-    return socket.emit("error", "Unauthorized");
+  const { projectToken, token } = socket.handshake.auth || {};
+  if (!projectToken || !token) {
+    return socket.emit("error", "Missing token or project token");
   }
+
+  const sender = await isAdminSocket(socket);
+  if (!sender) return socket.emit("error", "Unauthorized");
+
+  socket.sender = sender;
+  next();
 };
