@@ -18,4 +18,17 @@ jobs:
 
       - run: npm ci
 
+      # client.js constructs `new MongoClient(process.env.MONGODB_URI, ...)`
+      # at module load time (parsing only — it doesn't connect until
+      # getUserDB() is first called). Every test file that touches
+      # db_service.js, even ones that jest.mock("../core/client"), executes
+      # that top-level line at least once: Jest's automock still requires the
+      # real module first to learn its shape before replacing it. With no
+      # MONGODB_URI in this environment, the MongoClient constructor throws on
+      # an invalid connection string and the whole suite fails to load. No
+      # test ever really connects, so any syntactically valid URI is enough.
       - run: npx jest
+        env:
+          MONGODB_URI: mongodb://localhost:27017/ci-test
+          JWT_SECRET: ci-test-jwt-secret
+          ENCRYPTION_KEY: ci-test-encryption-key
