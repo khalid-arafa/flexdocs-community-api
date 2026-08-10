@@ -74,9 +74,16 @@ async function loginWithEmailAndPassword({
   if (!user) throw Error("Invalid email or password");
   if (!user.isActive) throw Error("Your account is disabled");
 
-  // Account lockout: reject if still within the lockout window.
-  if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
-    throw Error("Account is temporarily locked due to too many failed attempts. Try again later.");
+  // Account lockout: reject if still within the lockout window. A lockedUntil
+  // value that isn't a parseable date (corrupted data, however it got there)
+  // is treated as locked rather than silently ignored — `new Date(garbage) >
+  // new Date()` is always false, which used to make lockout a no-op for that
+  // account until a valid future date was written again.
+  if (user.lockedUntil) {
+    const lockedUntilMs = new Date(user.lockedUntil).getTime();
+    if (Number.isNaN(lockedUntilMs) || lockedUntilMs > Date.now()) {
+      throw Error("Account is temporarily locked due to too many failed attempts. Try again later.");
+    }
   }
 
   const { match, needsRehash } = await verifyPassword(password, user.password);
@@ -84,7 +91,11 @@ async function loginWithEmailAndPassword({
     // Increment failed attempts and lock after 10 consecutive failures for 15 minutes.
     const MAX_ATTEMPTS = 10;
     const LOCKOUT_MS = 15 * 60 * 1000;
-    const failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+    // Number(...) rather than `|| 0`: a corrupted non-numeric value would
+    // otherwise stay truthy, add 1 to it, produce NaN, and never reach
+    // MAX_ATTEMPTS — silently disabling lockout for that account.
+    const priorAttempts = Number(user.failedLoginAttempts);
+    const failedLoginAttempts = (Number.isFinite(priorAttempts) ? priorAttempts : 0) + 1;
     const lockUpdate = { failedLoginAttempts };
     if (failedLoginAttempts >= MAX_ATTEMPTS) {
       lockUpdate.lockedUntil = new Date(Date.now() + LOCKOUT_MS);
@@ -156,6 +167,11 @@ async function loginWithToken(userId, projectCode, token) {
     query: { _id: decoded.userId },
   });
   if (!user) throw Error("User not found!");
+  // Revocation check: same tokenVersion comparison used by checkDbUserApiAuth,
+  // socketAuth and set-user-token. This route was missing it, so a revoked
+  // token could still exchange for a session here.
+  const tokenVersion = decoded.tokenVersion || 0;
+  if ((user.tokenVersion || 0) !== tokenVersion) throw Error("Invalid or expired token");
   user.token = token;
   user.uid = user._id.toString();
   delete user._id;

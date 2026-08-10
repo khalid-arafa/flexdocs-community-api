@@ -17,6 +17,9 @@ const {
   updateManyDocuments,
   deleteDocument,
   deleteManyDocuments,
+  listIndexes,
+  createIndex,
+  dropIndex,
 } = require("../core/db_service");
 
 // ─── mock db factory ─────────────────────────────────────────────────────────
@@ -49,7 +52,8 @@ function makeMockDb({ docs = [], foundDoc = null, insertedId = "new-id" } = {}) 
     deleteMany: jest.fn().mockResolvedValue({ deletedCount: 1 }),
     countDocuments: jest.fn().mockResolvedValue(0),
     indexes: jest.fn().mockResolvedValue([]),
-    createIndex: jest.fn().mockResolvedValue({}),
+    createIndex: jest.fn().mockResolvedValue("field_1"),
+    dropIndex: jest.fn().mockResolvedValue({}),
   };
   const db = {
     collection: jest.fn().mockReturnValue(collection),
@@ -255,6 +259,116 @@ describe("db_service.js", () => {
       await getManyDocuments({ ...BASE, query: { _id: id } });
       const passedQuery = collection.find.mock.calls[0][0];
       expect(passedQuery._id).toBeInstanceOf(require("mongodb").ObjectId);
+    });
+
+    // C9: _id previously only coerced when it was the query's sole key and a
+    // bare string. Sibling keys and $in/$nin arrays fell through unconverted,
+    // so a filter like { _id: { $in: [...] } } silently matched nothing —
+    // MongoDB never matches a string against a stored ObjectId.
+
+    it("should convert _id to ObjectId when other keys are present in the same filter", async () => {
+      const { db, collection } = makeMockDb({ docs: [] });
+      getUserDB.mockResolvedValue(db);
+      const id = "507f1f77bcf86cd799439011";
+      await getManyDocuments({ ...BASE, query: { _id: id, ownerId: "owner-1" } });
+      const passedQuery = collection.find.mock.calls[0][0];
+      expect(passedQuery._id).toBeInstanceOf(require("mongodb").ObjectId);
+      expect(passedQuery._id.toString()).toBe(id);
+      expect(passedQuery.ownerId).toBe("owner-1");
+    });
+
+    it("should convert every valid ObjectId string inside _id.$in", async () => {
+      const { db, collection } = makeMockDb({ docs: [] });
+      getUserDB.mockResolvedValue(db);
+      const idA = "507f1f77bcf86cd799439011";
+      const idB = "507f1f77bcf86cd799439012";
+      await getManyDocuments({ ...BASE, query: { _id: { $in: [idA, idB] } } });
+      const passedQuery = collection.find.mock.calls[0][0];
+      expect(passedQuery._id.$in).toHaveLength(2);
+      for (const item of passedQuery._id.$in) {
+        expect(item).toBeInstanceOf(require("mongodb").ObjectId);
+      }
+      expect(passedQuery._id.$in.map(String)).toEqual([idA, idB]);
+    });
+
+    it("should convert valid ObjectId strings inside _id.$nin and leave an invalid one untouched", async () => {
+      const { db, collection } = makeMockDb({ docs: [] });
+      getUserDB.mockResolvedValue(db);
+      const idA = "507f1f77bcf86cd799439011";
+      await getManyDocuments({ ...BASE, query: { _id: { $nin: [idA, "not-an-object-id"] } } });
+      const passedQuery = collection.find.mock.calls[0][0];
+      expect(passedQuery._id.$nin[0]).toBeInstanceOf(require("mongodb").ObjectId);
+      expect(passedQuery._id.$nin[1]).toBe("not-an-object-id");
+    });
+
+    it("should still coerce a single-key _id: { $oid } wrapper the same as before", async () => {
+      const { db, collection } = makeMockDb({ docs: [] });
+      getUserDB.mockResolvedValue(db);
+      const id = "507f1f77bcf86cd799439011";
+      await getManyDocuments({ ...BASE, query: { _id: { $oid: id } } });
+      const passedQuery = collection.find.mock.calls[0][0];
+      expect(passedQuery._id).toBeInstanceOf(require("mongodb").ObjectId);
+      expect(passedQuery._id.toString()).toBe(id);
+    });
+  });
+
+  // ── C15: admin index management ───────────────────────────────────────────
+
+  describe("listIndexes / createIndex / dropIndex", () => {
+    it("listIndexes returns the collection's indexes", async () => {
+      const { db, collection } = makeMockDb();
+      collection.indexes.mockResolvedValue([{ key: { _id: 1 }, name: "_id_" }]);
+      getUserDB.mockResolvedValue(db);
+      const result = await listIndexes({ ...BASE });
+      expect(result).toEqual({ success: true, indexes: [{ key: { _id: 1 }, name: "_id_" }] });
+    });
+
+    it("listIndexes reports failure without throwing", async () => {
+      const { db, collection } = makeMockDb();
+      collection.indexes.mockRejectedValue(new Error("boom"));
+      getUserDB.mockResolvedValue(db);
+      const result = await listIndexes({ ...BASE });
+      expect(result).toEqual({ success: false, error: "boom" });
+    });
+
+    it("createIndex creates the requested keys and returns its name", async () => {
+      const { db, collection } = makeMockDb();
+      getUserDB.mockResolvedValue(db);
+      const result = await createIndex({ ...BASE, keys: { email: 1 }, options: { unique: true } });
+      expect(collection.createIndex).toHaveBeenCalledWith({ email: 1 }, { unique: true });
+      expect(result).toEqual({ success: true, name: "field_1" });
+    });
+
+    it("createIndex reports failure without throwing", async () => {
+      const { db, collection } = makeMockDb();
+      collection.createIndex.mockRejectedValue(new Error("index build failed"));
+      getUserDB.mockResolvedValue(db);
+      const result = await createIndex({ ...BASE, keys: { email: 1 } });
+      expect(result).toEqual({ success: false, error: "index build failed" });
+    });
+
+    it("dropIndex drops the named index", async () => {
+      const { db, collection } = makeMockDb();
+      getUserDB.mockResolvedValue(db);
+      const result = await dropIndex({ ...BASE, name: "email_1" });
+      expect(collection.dropIndex).toHaveBeenCalledWith("email_1");
+      expect(result).toEqual({ success: true });
+    });
+
+    it("dropIndex refuses to drop the default _id_ index", async () => {
+      const { db, collection } = makeMockDb();
+      getUserDB.mockResolvedValue(db);
+      const result = await dropIndex({ ...BASE, name: "_id_" });
+      expect(collection.dropIndex).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+    });
+
+    it("dropIndex reports failure without throwing", async () => {
+      const { db, collection } = makeMockDb();
+      collection.dropIndex.mockRejectedValue(new Error("index not found"));
+      getUserDB.mockResolvedValue(db);
+      const result = await dropIndex({ ...BASE, name: "ghost_1" });
+      expect(result).toEqual({ success: false, error: "index not found" });
     });
   });
 });

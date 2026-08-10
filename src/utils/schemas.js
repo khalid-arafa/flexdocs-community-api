@@ -161,6 +161,11 @@ const queryDocumentsSchema = z.object({
   limit: z.number().int().min(1).max(500).optional(),
   page: z.number().int().min(1).optional(),
   skip: z.number().int().min(0).optional(),
+  // C11: opt-in keyset pagination, additive alongside page/skip — see
+  // buildCursorSeek in db.routes.js. `paginate: "cursor"` opts in on a first
+  // page (no prior cursor to send yet); `cursor` carries a later page's token.
+  cursor: z.string().optional(),
+  paginate: z.literal("cursor").optional(),
 });
 
 const listCollectionsSchema = z.object({
@@ -175,6 +180,20 @@ const createCollectionSchema = z.object({
 
 const renameCollectionSchema = z.object({
   newName: collectionName,
+});
+
+// C15: admin-operated index creation, additive alongside auto-indexing.
+const createIndexSchema = z.object({
+  keys: z
+    .record(z.string(), z.union([z.literal(1), z.literal(-1)]))
+    .refine((k) => Object.keys(k).length > 0, "keys must have at least one field"),
+  options: z
+    .object({
+      unique: z.boolean().optional(),
+      sparse: z.boolean().optional(),
+      name: z.string().optional(),
+    })
+    .optional(),
 });
 
 const updateManySchema = z.object({
@@ -256,6 +275,7 @@ module.exports = {
   listCollectionsSchema,
   createCollectionSchema,
   renameCollectionSchema,
+  createIndexSchema,
   updateManySchema,
   deleteManySchema,
   // storage

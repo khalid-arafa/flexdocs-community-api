@@ -14,6 +14,7 @@ const { createAdminUser } = require("./seeds/createAdmin");
 const { errorHandler } = require("./middleware/error_handler.middleware");
 const { apiLimiter } = require("./middleware/rate_limit.middleware");
 const { sanitizeQuery } = require("./middleware/sanitize_query.middleware");
+const { typedErrorResponse } = require("./middleware/typed_error_response.middleware");
 const { csrfProtection } = require("./middleware/csrf.middleware");
 const { requestId } = require("./middleware/request_id.middleware");
 const Logger = require("./utils/logger");
@@ -32,6 +33,11 @@ createAdminUser();
 
 // request correlation ID (first middleware — available to all downstream)
 app.use(requestId);
+
+// Patches res.json to add code/status to error bodies. Must run before
+// anything that might send its own error response (rate limiter, CORS,
+// CSRF, ...) so every one of them is covered too, not just route handlers.
+app.use(typedErrorResponse);
 
 // CORS must run before all other middleware so preflight OPTIONS gets proper headers
 app.use(dynamicCors);

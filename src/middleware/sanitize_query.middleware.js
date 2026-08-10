@@ -16,6 +16,15 @@ const ALLOWED_OPERATORS = new Set([
   "$set", "$unset", "$inc", "$push", "$pull", "$addToSet", "$pop", "$rename",
 ]);
 
+// Not MongoDB operators — value-coercion markers that db_service.js's
+// formatQueryObj() converts to a real ObjectId/Date ($oid/$date being the
+// object's only key). Stripping them here (they start with "$" like any
+// other operator) silently emptied every date-range and id filter that used
+// them before it ever reached Mongo. formatQueryObj already validates $oid
+// via ObjectId.isValid() and both are the same coercion markers
+// sanitizeWriteData (db_service.js) already preserves in stored documents.
+const DATA_COERCION_KEYS = new Set(["$oid", "$date"]);
+
 // $regex runs inside the database, but the cost lands on a single shared Node
 // process via a blocked connection and maxTimeMS does not reliably interrupt
 // regex evaluation. Bound the input instead.
@@ -82,8 +91,9 @@ function sanitizeObject(obj, depth = 0) {
 
   const cleaned = {};
   for (const [key, value] of Object.entries(obj)) {
-    // block any $ operator not in the allowlist
-    if (key.startsWith("$") && !ALLOWED_OPERATORS.has(key)) continue;
+    // block any $ operator not in the allowlist (coercion markers pass too)
+    if (key.startsWith("$") && !ALLOWED_OPERATORS.has(key) && !DATA_COERCION_KEYS.has(key))
+      continue;
     if (key === "$regex") assertSafeRegex(value);
     cleaned[key] = sanitizeObject(value, depth + 1);
   }

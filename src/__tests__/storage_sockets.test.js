@@ -28,6 +28,9 @@ jest.mock("../utils/file", () => ({ getDownloadableLink: jest.fn() }));
 jest.mock("../middleware/storage_rules.middleware", () => ({
   checkStorageRule: jest.fn(),
 }));
+jest.mock("../middleware/db_rules.middleware", () => ({
+  isAdminSocket: jest.fn(),
+}));
 
 const mockEmit = jest.fn();
 const mockTo = jest.fn(() => ({ emit: mockEmit }));
@@ -37,6 +40,7 @@ const fsp = require("fs/promises");
 const { createStorageFile } = require("../core/storage_service");
 const { getDownloadableLink } = require("../utils/file");
 const { checkStorageRule } = require("../middleware/storage_rules.middleware");
+const { isAdminSocket } = require("../middleware/db_rules.middleware");
 const { uploadLimits } = require("../constants");
 const {
   storageSockets,
@@ -55,10 +59,10 @@ const {
 } = __internals;
 
 /** Captures the handlers `storageSockets` registers for one connection. */
-function connectSocket({ sender = null, storageRules } = {}) {
+function connectSocket({ sender = null, storageRules, storageRealtimeCheck } = {}) {
   const socket = {
     id: "sock1",
-    project: { code: "proj1", userId: "_system", storageRules },
+    project: { code: "proj1", userId: "_system", storageRules, storageRealtimeCheck },
     sender,
     handlers: {},
     on(event, fn) {
@@ -88,6 +92,7 @@ beforeEach(() => {
   fsp.appendFile.mockResolvedValue(undefined);
   fsp.stat.mockResolvedValue({ size: 42 });
   checkStorageRule.mockResolvedValue(true);
+  isAdminSocket.mockResolvedValue(null);
   createStorageFile.mockResolvedValue({ _id: "file-1", name: "photo" });
   getDownloadableLink.mockReturnValue("http://localhost/files/file-1");
 });
@@ -229,6 +234,14 @@ describe("upload:start", () => {
     await socket.handlers["upload:start"]({ name: "photo.jpg" });
     expect(emitted(socket, "upload:error").message).toBe("Upload denied by storage rules");
     expect(socket.activeUploads["photo.jpg"]).toBeUndefined();
+  });
+
+  it("allows an admin socket to upload even when storage rules would deny it", async () => {
+    checkStorageRule.mockResolvedValue(false);
+    isAdminSocket.mockResolvedValue({ _id: "admin1", roles: ["admin"] });
+    const socket = connectSocket();
+    await socket.handlers["upload:start"]({ name: "photo.jpg" });
+    expect(emitted(socket, "upload:ready")).toEqual({ name: "photo.jpg" });
   });
 
   it("caps concurrent uploads per socket", async () => {
@@ -384,6 +397,37 @@ describe("watch-buckets and disconnect", () => {
     expect(getStorageSocketsByRoom("proj1")).toEqual(["sock1"]);
     await socket.handlers["stop-watch-buckets"]({});
     expect(getStorageSocketsByRoom("proj1")).toEqual([]);
+  });
+
+  it("joins the room with no rule check when storageRealtimeCheck is off (default)", async () => {
+    checkStorageRule.mockResolvedValue(false);
+    const socket = connectSocket();
+    await socket.handlers["watch-buckets"]({});
+    expect(getStorageSocketsByRoom("proj1")).toEqual(["sock1"]);
+    expect(checkStorageRule).not.toHaveBeenCalled();
+  });
+
+  it("denies watch-buckets when storageRealtimeCheck is on and storage rules deny", async () => {
+    checkStorageRule.mockResolvedValue(false);
+    const socket = connectSocket({ storageRealtimeCheck: true });
+    await socket.handlers["watch-buckets"]({});
+    expect(emitted(socket, "error")).toBe("Unauthorized");
+    expect(getStorageSocketsByRoom("proj1")).toEqual([]);
+  });
+
+  it("allows watch-buckets when storageRealtimeCheck is on and storage rules allow", async () => {
+    checkStorageRule.mockResolvedValue(true);
+    const socket = connectSocket({ storageRealtimeCheck: true });
+    await socket.handlers["watch-buckets"]({});
+    expect(getStorageSocketsByRoom("proj1")).toEqual(["sock1"]);
+  });
+
+  it("lets an admin socket join watch-buckets even when storageRealtimeCheck denies", async () => {
+    checkStorageRule.mockResolvedValue(false);
+    isAdminSocket.mockResolvedValue({ _id: "admin1", roles: ["admin"] });
+    const socket = connectSocket({ storageRealtimeCheck: true });
+    await socket.handlers["watch-buckets"]({});
+    expect(getStorageSocketsByRoom("proj1")).toEqual(["sock1"]);
   });
 
   it("discards in-flight uploads and leaves the room on disconnect", async () => {

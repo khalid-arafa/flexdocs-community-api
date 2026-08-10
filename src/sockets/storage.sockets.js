@@ -6,6 +6,7 @@ const { getDownloadableLink } = require("../utils/file");
 const { uploadsPath, uploadLimits } = require("../constants");
 const { getIO } = require("./io_connect");
 const { checkStorageRule } = require("../middleware/storage_rules.middleware");
+const { isAdminSocket } = require("../middleware/db_rules.middleware");
 const Logger = require("../utils/logger");
 
 const files_room = {};
@@ -97,13 +98,18 @@ function storageSockets(io) {
         // Authorize the upload against the project's storage rules (action "add").
         // Closes the gap where any socket holding the project token could write
         // files. With no rules defined this allows uploads (backward compatible).
-        const allowed = await checkStorageRule({
-          storageRules: socket.project.storageRules,
-          action: "add",
-          resource: "files",
-          user: socket.sender || null,
-          body: fileInfo,
-        });
+        // Admin bypass mirrors storageGuard's `req.isDbAdmin || req.byAdmin` on
+        // the REST side — without it the dashboard's own uploads could be
+        // denied by rules written for ordinary end users.
+        const allowed =
+          (await isAdminSocket(socket)) ||
+          (await checkStorageRule({
+            storageRules: socket.project.storageRules,
+            action: "add",
+            resource: "files",
+            user: socket.sender || null,
+            body: fileInfo,
+          }));
         if (!allowed) {
           return socket.emit("upload:error", {
             name: fileInfo.name,
@@ -264,7 +270,25 @@ function storageSockets(io) {
     });
 
     // storage for admin
+    //
+    // Opt-in rule check (C2), default OFF via project.storageRealtimeCheck:
+    // historically this room had NO rule check at all — any socket holding a
+    // valid project token, public or private, received every file event.
+    // Gated behind a flag rather than always-on so existing deployments that
+    // rely on the current unfiltered behavior don't regress until they opt in
+    // and author storage rules for it, mirroring realtimePerDocCheck (K2).
     socket.on("watch-buckets", async (data) => {
+      if (socket.project.storageRealtimeCheck) {
+        const allowed =
+          (await isAdminSocket(socket)) ||
+          (await checkStorageRule({
+            storageRules: socket.project.storageRules,
+            action: "read",
+            resource: "buckets",
+            user: socket.sender || null,
+          }));
+        if (!allowed) return socket.emit("error", "Unauthorized");
+      }
       addSocketToStorageRoom({
         projectCode: socket.project.code,
         id: socket.id,

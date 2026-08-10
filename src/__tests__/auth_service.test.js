@@ -211,6 +211,24 @@ describe("auth_service.js", () => {
       expect(resetCall).toBeUndefined();
     });
 
+    it("should treat a corrupted (unparseable) lockedUntil as locked, not as unlocked", async () => {
+      getDocument.mockResolvedValue(makeUser({ lockedUntil: "not-a-date" }));
+      await expect(loginWithEmailAndPassword(params)).rejects.toThrow(
+        "Account is temporarily locked"
+      );
+    });
+
+    it("should still increment from a corrupted (non-numeric) failedLoginAttempts instead of stalling at NaN", async () => {
+      getDocument.mockResolvedValue(makeUser({ failedLoginAttempts: "oops" }));
+      verifyPassword.mockResolvedValue({ match: false, needsRehash: false });
+      await expect(loginWithEmailAndPassword(params)).rejects.toThrow();
+      expect(updateDocument).toHaveBeenCalledWith(
+        expect.objectContaining({
+          updateData: expect.objectContaining({ failedLoginAttempts: 1 }),
+        })
+      );
+    });
+
     // password rehash migration
 
     it("should trigger password rehash when needsRehash is true", async () => {
@@ -289,6 +307,28 @@ describe("auth_service.js", () => {
       await expect(loginWithToken("user1", "testproj", "valid-token")).rejects.toThrow(
         "User not found!"
       );
+    });
+
+    it("should reject a token whose tokenVersion no longer matches the stored user (revoked)", async () => {
+      verifyToken.mockReturnValue({ userId: "user-id-123", project: "testproj", tokenVersion: 1 });
+      getDocument.mockResolvedValue(makeUser({ tokenVersion: 2 }));
+      await expect(loginWithToken("user1", "testproj", "stale-token")).rejects.toThrow(
+        "Invalid or expired token"
+      );
+    });
+
+    it("should accept a token whose tokenVersion matches the stored user", async () => {
+      verifyToken.mockReturnValue({ userId: "user-id-123", project: "testproj", tokenVersion: 2 });
+      getDocument.mockResolvedValue(makeUser({ tokenVersion: 2 }));
+      const user = await loginWithToken("user1", "testproj", "current-token");
+      expect(user.uid).toBe("user-id-123");
+    });
+
+    it("should accept a legacy token with no tokenVersion claim when the user has none either", async () => {
+      verifyToken.mockReturnValue({ userId: "user-id-123", project: "testproj" });
+      getDocument.mockResolvedValue(makeUser());
+      const user = await loginWithToken("user1", "testproj", "legacy-token");
+      expect(user.uid).toBe("user-id-123");
     });
   });
 

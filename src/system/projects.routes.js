@@ -137,6 +137,10 @@ router.post("/:projectCode", projectApiAuth, async (req, res) => {
 // validateDbRulesStructure, and reads with the same
 // `project.realtimePerDocCheck === true` check everywhere. Undefined on every
 // project that has never set it, which is exactly "defaults to off".
+// storageRealtimeCheck (C2): same opt-in shape as realtimePerDocCheck above,
+// for storage's watch-buckets/stop-watch-buckets — which today have NO rule
+// check at all, so any socket holding a valid project token receives every
+// file event unfiltered. Sibling field for the same schema reason.
 const PROJECT_UPDATABLE_FIELDS = [
   "name",
   "description",
@@ -147,6 +151,13 @@ const PROJECT_UPDATABLE_FIELDS = [
   "storageRules",
   "authRules",
   "realtimePerDocCheck",
+  "storageRealtimeCheck",
+  // C15: opt out of ensure_indexes.js's automatic index creation for this
+  // project. Same sibling-field shape as the two flags above. Auto-indexing
+  // stays default-on (undefined === off) — flipping this to true is an
+  // operator decision, ideally made after snapshotting existing indexes via
+  // GET /:col/indexes so nothing auto-created gets silently orphaned.
+  "manualIndexes",
 ];
 
 router.put("/:projectCode", projectApiAuth, async (req, res) => {

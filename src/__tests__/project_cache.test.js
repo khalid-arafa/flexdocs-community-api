@@ -136,6 +136,39 @@ describe("projectApiAuth project document cache", () => {
     expect(getDocument).toHaveBeenCalledTimes(2);
   });
 
+  it("does not cache a fetch that was in flight when a concurrent write invalidated it (TOCTOU)", async () => {
+    // Request A starts fetching, but its Mongo round trip doesn't resolve yet.
+    let resolveFetch;
+    getDocument.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    const pendingRequest = runAuth();
+
+    // A credential rotation commits and invalidates the (currently empty)
+    // cache slot for this project code while request A is still in flight.
+    invalidateProjectCache("proj1");
+
+    // Request A's stale-in-flight read now resolves and reaches the populate
+    // step — it must NOT repopulate the cache the invalidation just cleared.
+    resolveFetch(makeProject({ name: "Stale-read-in-flight" }));
+    const a = await pendingRequest;
+    expect(a.req.project.name).toBe("Stale-read-in-flight");
+
+    // Request B must re-fetch from Mongo rather than reading back the stale
+    // value request A would otherwise have cached.
+    getDocument.mockResolvedValueOnce(makeProject({ name: "Fresh-after-rotation" }));
+    const b = await runAuth();
+    expect(b.req.project.name).toBe("Fresh-after-rotation");
+    expect(getDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches normally when no invalidation races the fetch", async () => {
+    getDocument.mockResolvedValueOnce(makeProject({ name: "No-race" }));
+    await runAuth();
+    await runAuth();
+    expect(getDocument).toHaveBeenCalledTimes(1);
+  });
+
   it("does not consult the cache at all for the synthetic _system/admin project", async () => {
     const { req } = await runAuth({
       params: { projectCode: "_system" },

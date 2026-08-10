@@ -24,6 +24,7 @@ const { checkDbUserApiAuth } = require("../middleware/user_auth.middleware.js");
 const { getPublicBaseUrl } = require("../utils/helper.js");
 const { authLimiter, anonLoginLimiter } = require("../middleware/rate_limit.middleware.js");
 const { zodValidate } = require("../middleware/zod_validate.middleware.js");
+const { stripProtectedAuthFields } = require("../utils/auth_field_guard.js");
 const Logger = require("../utils/logger");
 const {
   dbRegisterSchema,
@@ -374,13 +375,14 @@ router.put("/accounts/:id", async (req, res) => {
     if (req.body.password && req.byAdmin) {
       req.body.password = await hashPassword(req.body.password);
     }
+    const updateData = stripProtectedAuthFields(authCollectionName, req.body);
     const result = await updateDocument({
       userId: req.project.userId,
       projectCode: req.project.code,
       collectionName: authCollectionName,
       query: { _id: req.params.id },
       type: "update",
-      updateData: req.body,
+      updateData,
     });
     const account = await getDocument({
       userId: req.project.userId,

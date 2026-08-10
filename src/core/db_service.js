@@ -51,6 +51,37 @@ function sanitizeWriteData(data) {
 const QUERY_TIMEOUT_MS = 10_000;
 
 function formatQueryObj(query) {
+  function coerceIdString(value) {
+    return typeof value === "string" && ObjectId.isValid(value) ? new ObjectId(value) : value;
+  }
+
+  // `_id` needs coercion wherever it appears as a key, not only when it's the
+  // query's sole key (the shortcut below already covered that case) and not
+  // only as a bare string. Two shapes fell through before this existed:
+  //   - multi-key filters, e.g. { _id: "hex", ownerId: "x" } — the sole-key
+  //     shortcut never fires because the object has two keys, so `_id`
+  //     reached Mongo as a string and matched nothing against a stored
+  //     ObjectId.
+  //   - `_id: { $in: [...] } }` / `$nin` — array elements are plain query
+  //     values, not another query object, so plain recursion never visited
+  //     them as candidates for coercion.
+  // Anything else under `_id` (a single-key `{ $oid }`/`{ $date }` wrapper,
+  // for instance) still goes through processObject unchanged, so existing
+  // shapes keep behaving exactly as before.
+  function coerceIdField(value) {
+    if (typeof value === "string") return coerceIdString(value);
+    if (Array.isArray(value)) return value.map(coerceIdField);
+    if (value && typeof value === "object") {
+      if (!("$in" in value) && !("$nin" in value)) return processObject(value);
+      const out = {};
+      for (const [k, v] of Object.entries(value)) {
+        out[k] = k === "$in" || k === "$nin" ? coerceIdField(v) : processObject(v);
+      }
+      return out;
+    }
+    return value;
+  }
+
   function processObject(obj) {
     if (!obj || typeof obj !== "object") return obj;
 
@@ -66,7 +97,7 @@ function formatQueryObj(query) {
     for (const [key, value] of Object.entries(obj)) {
       if (BLOCKED_OPERATORS.has(key))
         throw new Error(`Forbidden operator: ${key}`);
-      result[key] = processObject(value);
+      result[key] = key === "_id" ? coerceIdField(value) : processObject(value);
     }
     return result;
   }
@@ -164,6 +195,43 @@ async function renameCollection({ userId, projectCode, oldName, newName }) {
   }
 }
 
+// C15: admin-operated index management, additive alongside auto-indexing
+// (ensure_indexes.js), which stays default-on. Lets an operator who opts a
+// project into project.manualIndexes (see projects.routes.js) declare
+// indexes explicitly instead — snapshotting what auto-indexing already
+// created is the recommended first step before flipping that flag.
+async function listIndexes({ userId, projectCode, collectionName }) {
+  const db = await getUserDB(userId, projectCode);
+  try {
+    const indexes = await db.collection(collectionName).indexes();
+    return { success: true, indexes };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+async function createIndex({ userId, projectCode, collectionName, keys, options = {} }) {
+  const db = await getUserDB(userId, projectCode);
+  try {
+    const name = await db.collection(collectionName).createIndex(keys, options);
+    return { success: true, name };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+async function dropIndex({ userId, projectCode, collectionName, name }) {
+  if (name === "_id_")
+    return { success: false, error: "Cannot drop the default _id_ index" };
+  const db = await getUserDB(userId, projectCode);
+  try {
+    await db.collection(collectionName).dropIndex(name);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 async function dropDatabase({ userId, projectCode }) {
   try {
     const db = await getUserDB(userId, projectCode);
@@ -203,6 +271,11 @@ async function getDocument({
   collectionName,
   query,
   select = {},
+  // C15: defaults to true so every existing call site (the overwhelming
+  // majority, which has no reason to know about a per-project flag) keeps
+  // today's auto-indexing behavior unchanged. Only db.routes.js's request
+  // handlers, which have req.project in scope, ever pass this explicitly.
+  canCreateIndexes = true,
 }) {
   try {
     if (!userId || !projectCode || !collectionName || !query)
@@ -223,7 +296,7 @@ async function getDocument({
       collection,
       query,
       sort: {},
-      canCreateIndexes: true,
+      canCreateIndexes,
     });
     return await collection.findOne(query, { projection: select, maxTimeMS: QUERY_TIMEOUT_MS });
   } catch (error) {
@@ -241,12 +314,13 @@ async function getManyDocuments({
   skip = 0,
   select = {},
   limit = 100,
+  canCreateIndexes = true,
 }) {
   if (limit < 1) return [];
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(collectionName);
   query = formatQueryObj(query);
-  await ensureIndexes({ collection, query, sort, canCreateIndexes: true });
+  await ensureIndexes({ collection, query, sort, canCreateIndexes });
   return await collection
     .find(query)
     .sort(sort)
@@ -262,11 +336,12 @@ async function countDocuments({
   projectCode,
   collectionName,
   query = {},
+  canCreateIndexes = true,
 }) {
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(collectionName);
   query = formatQueryObj(query);
-  await ensureIndexes({ collection, query, canCreateIndexes: true });
+  await ensureIndexes({ collection, query, canCreateIndexes });
   return await collection.countDocuments(query, { maxTimeMS: QUERY_TIMEOUT_MS });
 }
 
@@ -323,6 +398,10 @@ async function deleteManyDocuments({
 
 module.exports = {
   sanitizeWriteData,
+  formatQueryObj,
+  listIndexes,
+  createIndex,
+  dropIndex,
   createCollection,
   getCollectionsList,
   checkCollectionExists,

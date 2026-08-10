@@ -16,6 +16,9 @@ const {
   createCollection,
   dropCollection,
   renameCollection,
+  listIndexes,
+  createIndex,
+  dropIndex,
 } = require("../core/db_service");
 const {
   sendUpdateCollectionStreamEvent,
@@ -25,13 +28,16 @@ const {
   collectionMiddleware,
   documentMiddleware,
   bulkMiddleware,
+  validateCollectionParam,
 } = require("../middleware/db_rules.middleware");
 const { zodValidate } = require("../middleware/zod_validate.middleware");
 const { pagination } = require("../constants");
+const { encodeCursor, buildCursorSeek } = require("../utils/cursor");
 const {
   listCollectionsSchema,
   createCollectionSchema,
   renameCollectionSchema,
+  createIndexSchema,
   queryDocumentsSchema,
   updateManySchema,
   deleteManySchema,
@@ -140,36 +146,70 @@ router.get("/:col", collectionMiddleware, (req, res) =>
   }),
 );
 router.post("/:col", collectionMiddleware, zodValidate(queryDocumentsSchema), async (req, res) => {
-  let { query, sort, select, limit, page, skip } = req.body;
+  let { query, sort, select, limit, page, skip, cursor, paginate } = req.body;
   if (!page) page = pagination.defaultPage;
   if (!limit) limit = 100;
   limit = Math.min(Math.max(1, limit), pagination.maxLimit);
   if (!skip) skip = (page - 1) * limit;
+
+  // C11: opt-in keyset pagination, additive alongside the page/skip offset
+  // path above (which stays completely unaffected when neither param is
+  // sent — the overwhelming majority of existing callers). Cursor mode is
+  // requested either by sending a previous response's `nextCursor` back as
+  // `cursor`, or, for a first page, by sending `paginate: "cursor"`.
+  const usingCursor = Boolean(cursor) || paginate === "cursor";
+  let effectiveQuery = query;
+  let effectiveSort = sort;
+  let primaryField = null;
+  if (usingCursor) {
+    const seek = buildCursorSeek({ query, sort, cursorStr: cursor });
+    if (seek.invalidCursor) return res.status(400).json({ message: "Invalid cursor" });
+    effectiveQuery = seek.query;
+    effectiveSort = seek.sort;
+    primaryField = seek.primaryField;
+    skip = 0; // seek condition replaces skip — combining both would double-advance
+  }
 
   try {
     const docs = await getManyDocuments({
       userId: req.project.userId,
       projectCode: req.project.code,
       collectionName: req.params.col,
-      query,
-      sort,
+      query: effectiveQuery,
+      sort: effectiveSort,
       select,
       limit,
       skip,
+      canCreateIndexes: !req.project.manualIndexes,
     });
 
-    if (!req.isDbAdmin) return res.status(200).json(docs);
+    // Heuristic: a full page might mean more results exist. Worst case the
+    // caller makes one extra round trip that comes back empty — cheaper than
+    // an exact count on every page.
+    const nextCursor = usingCursor && docs.length === limit
+      ? encodeCursor(docs[docs.length - 1], primaryField)
+      : null;
+
+    if (!req.isDbAdmin) {
+      // Bare-array shape is preserved for every caller that doesn't opt into
+      // cursor mode — changing it would break every existing consumer of
+      // this route. Cursor-mode callers are, by definition, new integrations
+      // written against this response shape.
+      return res.status(200).json(usingCursor ? { docs, nextCursor } : docs);
+    }
     const totalCount = await countDocuments({
       userId: req.project.userId,
       projectCode: req.project.code,
       collectionName: req.params.col,
-      query,
+      query: effectiveQuery,
+      canCreateIndexes: !req.project.manualIndexes,
     });
     return res.status(201).json({
       docs,
       totalCount,
       page,
       ipp: limit,
+      nextCursor,
     });
   } catch (error) {
     Logger.error(error.message, { stack: error.stack });
@@ -304,6 +344,51 @@ router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req
     Logger.error(error.message, { stack: error.stack });
     return res.status(500).json({ message: error.message });
   }
+});
+
+// C15: admin index management — additive alongside ensure_indexes.js's
+// automatic indexing, which stays default-on. GET is the recommended first
+// step (snapshot what auto-indexing already created) before opting a project
+// into project.manualIndexes. Same admin gate as /collections and
+// rename/drop above — schema introspection/mutation, not end-user data.
+router.get("/:col/indexes", async (req, res) => {
+  if (!req.isDbAdmin) return res.status(403).json({ message: "Access denied" });
+  if (!validateCollectionParam(req, res)) return;
+  const result = await listIndexes({
+    userId: req.project.userId,
+    projectCode: req.project.code,
+    collectionName: req.params.col,
+  });
+  if (!result.success) return res.status(500).json({ message: result.error });
+  return res.status(200).json({ indexes: result.indexes });
+});
+
+router.post("/:col/indexes", zodValidate(createIndexSchema), async (req, res) => {
+  if (!req.isDbAdmin) return res.status(403).json({ message: "Access denied" });
+  if (!validateCollectionParam(req, res)) return;
+  const { keys, options } = req.body;
+  const result = await createIndex({
+    userId: req.project.userId,
+    projectCode: req.project.code,
+    collectionName: req.params.col,
+    keys,
+    options,
+  });
+  if (!result.success) return res.status(400).json({ message: result.error });
+  return res.status(201).json({ name: result.name });
+});
+
+router.delete("/:col/indexes/:name", async (req, res) => {
+  if (!req.isDbAdmin) return res.status(403).json({ message: "Access denied" });
+  if (!validateCollectionParam(req, res)) return;
+  const result = await dropIndex({
+    userId: req.project.userId,
+    projectCode: req.project.code,
+    collectionName: req.params.col,
+    name: req.params.name,
+  });
+  if (!result.success) return res.status(400).json({ message: result.error });
+  return res.status(200).json({ message: "Index dropped successfully" });
 });
 
 // get document by id

@@ -50,6 +50,42 @@ describe("operator allowlist", () => {
   });
 });
 
+describe("$date/$oid coercion markers", () => {
+  it("keeps a $date marker instead of stripping it (date-range filters)", () => {
+    const out = sanitizeObject({
+      createdAt: { $gte: { $date: "2024-01-01T00:00:00.000Z" }, $lte: { $date: "2024-12-31T00:00:00.000Z" } },
+    });
+    expect(out).toEqual({
+      createdAt: {
+        $gte: { $date: "2024-01-01T00:00:00.000Z" },
+        $lte: { $date: "2024-12-31T00:00:00.000Z" },
+      },
+    });
+  });
+
+  it("keeps an $oid marker instead of stripping it (id filters)", () => {
+    const out = sanitizeObject({ ownerId: { $oid: "507f1f77bcf86cd799439011" } });
+    expect(out).toEqual({ ownerId: { $oid: "507f1f77bcf86cd799439011" } });
+  });
+
+  it("still strips a genuine code-execution operator sitting alongside a $date marker", () => {
+    const out = sanitizeObject({ $where: "1==1", createdAt: { $date: "2024-01-01T00:00:00.000Z" } });
+    expect(out).toEqual({ createdAt: { $date: "2024-01-01T00:00:00.000Z" } });
+  });
+
+  it("round-trips through formatQueryObj into a real Date/ObjectId", () => {
+    const { formatQueryObj } = require("../core/db_service");
+    const sanitized = sanitizeObject({
+      createdAt: { $gte: { $date: "2024-01-01T00:00:00.000Z" } },
+      _id: { $oid: "507f1f77bcf86cd799439011" },
+    });
+    const formatted = formatQueryObj(sanitized);
+    expect(formatted.createdAt.$gte).toBeInstanceOf(Date);
+    expect(formatted.createdAt.$gte.toISOString()).toBe("2024-01-01T00:00:00.000Z");
+    expect(formatted._id.toString()).toBe("507f1f77bcf86cd799439011");
+  });
+});
+
 describe("$regex bounds", () => {
   it("allows an ordinary pattern", () => {
     expect(sanitizeObject({ name: { $regex: "^ali", $options: "i" } })).toEqual({

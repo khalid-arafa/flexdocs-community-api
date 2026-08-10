@@ -26,6 +26,16 @@ const { hashProjectToken } = require("../utils/helper");
 const PROJECT_CACHE_TTL_MS = 30 * 1000;
 const projectCache = new Map(); // code -> { doc, expiresAt }
 
+// Closes a narrow TOCTOU window: a request that reads the project doc from
+// Mongo just before a credential rotation commits, then tries to populate the
+// cache just AFTER invalidateProjectCache already ran for that write, would
+// otherwise overwrite the fresh (empty) cache slot with what it fetched —
+// serving stale credentials for up to PROJECT_CACHE_TTL_MS. Bumped on every
+// invalidation, checked before every populate: if the generation moved while
+// a fetch was in flight, that fetch's result is used for this request only
+// and never cached, so the next request re-fetches instead of trusting it.
+const projectCacheGeneration = new Map(); // code -> generation number
+
 // A deep-enough clone: rebuilds every plain object/array level so a
 // downstream handler that does `req.project.someField = x`, or mutates an
 // array in place (push/splice on credentials, say), can never reach through
@@ -49,6 +59,7 @@ function cloneProjectDoc(value) {
 // instead of risking a second stale copy being cached from a racing request.
 function invalidateProjectCache(code) {
   projectCache.delete(code);
+  projectCacheGeneration.set(code, (projectCacheGeneration.get(code) || 0) + 1);
 }
 
 async function projectApiAuth(req, res, next) {
@@ -85,6 +96,7 @@ async function projectApiAuth(req, res, next) {
   } else {
     if (cached) projectCache.delete(req.params.projectCode); // expired backstop entry
 
+    const generationAtFetchStart = projectCacheGeneration.get(req.params.projectCode) || 0;
     project = await getDocument({
       userId: systemDatabaseName,
       projectCode: systemProjectCode,
@@ -97,10 +109,16 @@ async function projectApiAuth(req, res, next) {
     // so a project created moments ago is visible immediately rather than
     // waiting out a negative-cache TTL.
     if (project) {
-      projectCache.set(req.params.projectCode, {
-        doc: project,
-        expiresAt: Date.now() + PROJECT_CACHE_TTL_MS,
-      });
+      // Skip the populate if a write invalidated this project code while the
+      // fetch above was in flight — see the TOCTOU comment on
+      // projectCacheGeneration. This request still uses what it fetched.
+      const generationNow = projectCacheGeneration.get(req.params.projectCode) || 0;
+      if (generationNow === generationAtFetchStart) {
+        projectCache.set(req.params.projectCode, {
+          doc: project,
+          expiresAt: Date.now() + PROJECT_CACHE_TTL_MS,
+        });
+      }
       // req.project must never be the SAME object stored in the cache entry
       // above, or this very request mutating it (see the clone comment) would
       // corrupt the cached copy before a second request ever reads it back.
