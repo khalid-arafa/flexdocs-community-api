@@ -13,6 +13,7 @@ const {
   systemProjectCode,
   authCollectionName,
 } = require("../constants");
+const { claimSetupSlot, releaseSetupSlot } = require("../utils/setup_lock");
 const { authLimiter } = require("../middleware/rate_limit.middleware");
 const { zodValidate } = require("../middleware/zod_validate.middleware");
 const { setupSchema } = require("../utils/schemas");
@@ -132,15 +133,28 @@ router.post("/setup", authLimiter, zodValidate(setupSchema), async (req, res) =>
         .json({ message: "Setup token is not configured on the server." });
     if (!ok) return res.status(403).json({ message: "Invalid setup token." });
 
+    // Only one caller may get past here, whatever needsSetup() told the others.
+    if (!(await claimSetupSlot()))
+      return res
+        .status(403)
+        .json({ message: "Setup has already been completed." });
+
     const { name, email, password, emailConfig } = req.body;
-    await registerWithEmailAndPassword({
-      userId: systemDatabaseName,
-      projectCode: systemProjectCode,
-      name,
-      email,
-      password,
-      roles: ["admin"],
-    });
+    try {
+      await registerWithEmailAndPassword({
+        userId: systemDatabaseName,
+        projectCode: systemProjectCode,
+        name,
+        email,
+        password,
+        roles: ["admin"],
+      });
+    } catch (error) {
+      // Hand the slot back — a rejected password or a duplicate email must not
+      // leave setup permanently claimed with no admin to show for it.
+      await releaseSetupSlot();
+      throw error;
+    }
     Logger.info("Admin account created via setup wizard", { email });
 
     // Optional: persist email/SMTP config supplied during setup. Best-effort —

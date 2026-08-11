@@ -3,6 +3,7 @@ const { authCollectionName } = require("../constants");
 const {
   hashPassword,
   verifyPassword,
+  burnPasswordComparison,
   getToken,
   verifyToken,
 } = require("../utils/encryptions");
@@ -30,6 +31,19 @@ async function registerWithEmailAndPassword({
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(authCollectionName);
   // check email
+  //
+  // This message does disclose whether an address has an account, and that is a
+  // knowingly accepted trade-off rather than an oversight. Registration here
+  // returns a real auth token on success (see the delegation to
+  // loginWithEmailAndPassword below), so the usual fix — answer identically in
+  // both cases and resolve it over email — cannot apply without either minting a
+  // token for a login that did not happen or changing the response shape every
+  // client already depends on. Closing it properly means moving to a
+  // verification-first signup flow, which is a product decision.
+  //
+  // The login path carries no equivalent leak: it returns one shared message for
+  // both causes AND spends the same bcrypt time on both (burnPasswordComparison).
+  // Both paths sit behind authLimiter, 30 requests / 15 min / IP.
   const exists = await collection.findOne({ email });
   if (exists) throw new Error("This email is already registered!");
 
@@ -77,7 +91,13 @@ async function loginWithEmailAndPassword({
     collectionName: authCollectionName,
     query: { email },
   });
-  if (!user) throw Error("Invalid email or password");
+  if (!user) {
+    // Same message AND same cost as a wrong password — see
+    // burnPasswordComparison. Without this the shared message still leaks which
+    // addresses have accounts, via response time alone.
+    await burnPasswordComparison(password);
+    throw Error("Invalid email or password");
+  }
   if (!user.isActive) throw Error("Your account is disabled");
 
   // Account lockout: reject if still within the lockout window. A lockedUntil

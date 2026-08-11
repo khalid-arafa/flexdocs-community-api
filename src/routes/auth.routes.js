@@ -19,7 +19,11 @@ const {
 
 const { sendAuthSocketEvent } = require("../sockets/auth.sockets.js");
 const { hashPassword, getToken } = require("../utils/encryptions.js");
-const { isStrongPassword, isValidEmail } = require("../utils/validators.js");
+const {
+  isStrongPassword,
+  isValidEmail,
+  isValidObjectId,
+} = require("../utils/validators.js");
 const { checkDbUserApiAuth } = require("../middleware/user_auth.middleware.js");
 const { getPublicBaseUrl } = require("../utils/helper.js");
 const { authLimiter, anonLoginLimiter } = require("../middleware/rate_limit.middleware.js");
@@ -346,6 +350,8 @@ router.post("/accounts/add", zodValidate(adminAddAccountSchema), async (req, res
 });
 
 router.post("/accounts/send-verification-email", async (req, res) => {
+  if (!isValidObjectId(req.body.userId))
+    return res.status(400).json({ message: "userId is not valid" });
   try {
     let { userId: accountId } = req.body;
     const account = await getDocument({
@@ -378,6 +384,8 @@ router.post("/accounts/send-verification-email", async (req, res) => {
 });
 
 router.put("/accounts/:id", async (req, res) => {
+  if (!isValidObjectId(req.params.id))
+    return res.status(400).json({ message: "id is not valid" });
   try {
     if (req.body.password && req.byAdmin) {
       req.body.password = await hashPassword(req.body.password);
@@ -410,6 +418,8 @@ router.put("/accounts/:id", async (req, res) => {
 });
 
 router.delete("/accounts/:id", async (req, res) => {
+  if (!isValidObjectId(req.params.id))
+    return res.status(400).json({ message: "id is not valid" });
   try {
     const query = { _id: req.params.id };
     const result = await deleteDocument({

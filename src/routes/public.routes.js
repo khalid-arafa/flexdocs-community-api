@@ -15,14 +15,28 @@ const {
 } = require("../constants");
 const { isStrongPassword } = require("../utils/validators");
 const { hashPassword } = require("../utils/encryptions");
+const { authLimiter } = require("../middleware/rate_limit.middleware");
 const router = express.Router();
 
-router.get("/verify", async (req, res) => {
+// These three carry credential-bearing tokens, so they belong on the strict
+// limiter with the rest of the auth surface. They are mounted at "/" rather
+// than under /projects/:code/auth, which is the only reason they were left on
+// the 300/min global limiter — an oversight, not a decision. 30 per 15 min per
+// IP is far above what clicking a link from an inbox costs.
+router.get("/verify", authLimiter, async (req, res) => {
   try {
     if (!req.query.token) throw new Error("Token is required");
 
     const result = verifyVerificationToken(req.query.token);
     if (!result.success) throw new Error(result.message);
+
+    // Token type-confusion guard. All three verification tokens are signed with
+    // the same secret and carry the same shape, so without this a
+    // reset-password-link/-action token could be replayed here to mark an email
+    // verified — proving ownership of an address the holder never received mail
+    // at. Only a token minted by sendVerifyEmail may verify an address.
+    if (result.data.type !== "email")
+      throw new Error("Your token is invalid!");
 
     const project = await getDocument({
       userId: systemDatabaseName,
@@ -58,12 +72,22 @@ router.get("/verify", async (req, res) => {
   }
 });
 
-router.get("/reset-password", async (req, res) => {
+router.get("/reset-password", authLimiter, async (req, res) => {
   try {
     if (!req.query.token) throw new Error("Token is required");
 
     const result = verifyVerificationToken(req.query.token);
     if (!result.success) throw new Error(result.message);
+
+    // Token type-confusion guard, and the most consequential of the three: this
+    // handler renders the account's stored `resetPasswordToken` into the form
+    // action below. Without the check, an "email" verification token — which
+    // sits in the user's inbox from registration — could be replayed here to
+    // READ the reset-password-action token and complete a full takeover, since
+    // anyone may trigger a reset for a known address. Only the link token minted
+    // by sendResetPasswordEmail may render this page.
+    if (result.data.type !== "reset-password-link")
+      throw new Error("Your token is invalid!");
 
     const project = await getDocument({
       userId: systemDatabaseName,
@@ -121,7 +145,7 @@ router.get("/reset-password", async (req, res) => {
   }
 });
 
-router.post("/reset-password", async (req, res) => {
+router.post("/reset-password", authLimiter, async (req, res) => {
   try {
     if (!req.query.token)
       throw new Error("Form action is not in a valid form!");

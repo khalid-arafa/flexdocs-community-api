@@ -101,6 +101,31 @@ router.get("/check-code/:code", async (req, res) => {
 });
 
 // add project
+// Ownership gate for the project-scoped system routes below.
+//
+// projectApiAuth resolves req.project from the URL code alone — it answers "does
+// this project exist and is this project token valid for it", NOT "may this
+// system user administer it". The routes that read or write a project's
+// credentials and rules were relying on the second question never being asked,
+// because this build has a single admin and systemApiAuth marks every system
+// user byAdmin. The moment a non-admin system user exists, that assumption turns
+// into cross-tenant disclosure of dbRules and plaintext project tokens.
+//
+// PUT/DELETE /:projectCode and POST /:projectCode already scope their own query
+// by { userId: req.sender._id }; this closes the same hole on the rest. It is a
+// no-op today by construction — byAdmin short-circuits it.
+function requireProjectOwner(req, res, next) {
+  if (req.byAdmin) return next();
+
+  const ownerId = req.project && req.project.userId;
+  const senderId = req.sender && req.sender._id;
+  if (ownerId && senderId && String(ownerId) === String(senderId)) return next();
+
+  // 404 rather than 403, matching how a private project hides itself elsewhere
+  // in this file: a non-owner must not be able to confirm the code exists.
+  return res.status(404).json({ message: "Project was not found!" });
+}
+
 router.post("/:projectCode", projectApiAuth, async (req, res) => {
   const { select } = req.body;
   try {
@@ -270,7 +295,7 @@ router.delete("/:projectCode", projectApiAuth, async (req, res) => {
 
 // project creds
 // add
-router.get("/:projectCode/creds", projectApiAuth, async (req, res) => {
+router.get("/:projectCode/creds", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const project = await getDocument({
       userId: systemDatabaseName,
@@ -284,7 +309,7 @@ router.get("/:projectCode/creds", projectApiAuth, async (req, res) => {
     return res.status(400).json({ message: error.message });
   }
 });
-router.post("/:projectCode/creds", projectApiAuth, zodValidate(createCredentialSchema), async (req, res) => {
+router.post("/:projectCode/creds", projectApiAuth, requireProjectOwner, zodValidate(createCredentialSchema), async (req, res) => {
   try {
     const { name, description } = req.body;
 
@@ -342,7 +367,7 @@ router.post("/:projectCode/creds", projectApiAuth, zodValidate(createCredentialS
   }
 });
 
-router.delete("/:projectCode/creds/:id", projectApiAuth, async (req, res) => {
+router.delete("/:projectCode/creds/:id", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     // check if name exists
     const project = await getDocument({
@@ -389,7 +414,7 @@ router.delete("/:projectCode/creds/:id", projectApiAuth, async (req, res) => {
 //
 
 // rules
-router.get("/:projectCode/db/rules", projectApiAuth, async (req, res) => {
+router.get("/:projectCode/db/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const project = await getDocument({
       userId: systemDatabaseName,
@@ -406,7 +431,7 @@ router.get("/:projectCode/db/rules", projectApiAuth, async (req, res) => {
   }
 });
 
-router.put("/:projectCode/db/rules", projectApiAuth, async (req, res) => {
+router.put("/:projectCode/db/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const { valid, errors } = validateDbRulesStructure(req.body);
     if (!valid) {
@@ -432,7 +457,7 @@ router.put("/:projectCode/db/rules", projectApiAuth, async (req, res) => {
   }
 });
 
-router.get("/:projectCode/storage/rules", projectApiAuth, async (req, res) => {
+router.get("/:projectCode/storage/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     return res.status(200).json(req.project.storageRules || {});
   } catch (error) {
@@ -440,7 +465,7 @@ router.get("/:projectCode/storage/rules", projectApiAuth, async (req, res) => {
   }
 });
 
-router.put("/:projectCode/storage/rules", projectApiAuth, async (req, res) => {
+router.put("/:projectCode/storage/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const { valid, errors } = validateDbRulesStructure(req.body);
     if (!valid) {
@@ -467,7 +492,7 @@ router.put("/:projectCode/storage/rules", projectApiAuth, async (req, res) => {
 });
 
 // auth rules
-router.get("/:projectCode/auth/rules", projectApiAuth, async (req, res) => {
+router.get("/:projectCode/auth/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const project = await getDocument({
       userId: systemDatabaseName,
@@ -484,7 +509,7 @@ router.get("/:projectCode/auth/rules", projectApiAuth, async (req, res) => {
   }
 });
 
-router.put("/:projectCode/auth/rules", projectApiAuth, async (req, res) => {
+router.put("/:projectCode/auth/rules", projectApiAuth, requireProjectOwner, async (req, res) => {
   try {
     const { valid, errors } = validateAuthRules(req.body);
     if (!valid) {

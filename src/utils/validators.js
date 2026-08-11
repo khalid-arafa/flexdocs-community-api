@@ -1,4 +1,15 @@
 const Jexl = require("jexl");
+const { ObjectId } = require("mongodb");
+
+// One source of truth for "is this a usable document id".
+//
+// Routes that skipped this relied on formatQueryObj turning a malformed id into
+// a query that simply matches nothing, so a bad id read as "not found" and a bad
+// id on a delete read as success-with-zero-deletions. That is indistinguishable
+// from a real miss, which makes a client bug look like missing data.
+function isValidObjectId(id) {
+  return typeof id === "string" && ObjectId.isValid(id);
+}
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -109,6 +120,7 @@ function validateAuthRules(rules) {
 }
 
 module.exports = {
+  isValidObjectId,
   isValidEmail,
   isValidPhone,
   isStrongPassword,

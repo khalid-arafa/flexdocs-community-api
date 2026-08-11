@@ -73,8 +73,13 @@ async function checkSystemApiAuth(req, res, next) {
     authHeader && authHeader.startsWith("Bearer ")
       ? authHeader.split(" ")[1]
       : null;
-  const queryToken = req.query.token;
-  token = cookieToken || bearerToken || queryToken;
+  // Deliberately NOT read from `req.query`. An admin session token in a query
+  // string lands in browser history, proxy and access logs, and the Referer
+  // header of every outbound link on the page — none of which a cookie or an
+  // Authorization header does. The dashboard has never used it: its only
+  // query-string token is the PROJECT token on file-download links, which the
+  // storage file-serve route verifies itself and is unaffected by this.
+  token = cookieToken || bearerToken;
 
   if (!token) {
     next();

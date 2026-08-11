@@ -18,6 +18,10 @@ const authCollectionName = "_users";
 const systemDatabaseName = "_system";
 const systemProjectCode = "_system";
 const systemProjectCollectionName = "projects";
+// Holds exactly one document, whose fixed _id is the atomic one-time claim on
+// creating the first admin. See claimSetupSlot in routes/setup.routes.js.
+const setupLockCollectionName = "_setup_lock";
+const SETUP_LOCK_ID = "admin-bootstrap";
 
 // auth rules
 const defaultAuthRules = {
@@ -105,6 +109,8 @@ module.exports = {
   systemDatabaseName,
   systemProjectCode,
   systemProjectCollectionName,
+  setupLockCollectionName,
+  SETUP_LOCK_ID,
   authCollectionName,
   //
   defaultAuthRules,

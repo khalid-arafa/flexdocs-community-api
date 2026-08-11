@@ -6,6 +6,7 @@ const {
 const { registerWithEmailAndPassword } = require("../core/auth_service");
 const { getDocument, updateDocument } = require("../core/db_service");
 const { hashPassword, verifyPassword } = require("../utils/encryptions");
+const { claimSetupSlot, releaseSetupSlot } = require("../utils/setup_lock");
 const Logger = require("../utils/logger");
 
 async function createAdminUser() {
@@ -44,14 +45,27 @@ async function createAdminUser() {
       return;
     }
 
-    await registerWithEmailAndPassword({
-      userId: systemDatabaseName,
-      projectCode: systemProjectCode,
-      name: "Admin",
-      email: envEmail,
-      password: envPass,
-      roles: ["admin"],
-    });
+    // Take the same one-time claim the setup wizard takes. index.js does not
+    // await this seed before listening, so POST /setup can be running right
+    // now, having read the same "no admin yet" this function did.
+    if (!(await claimSetupSlot())) {
+      Logger.info("Admin bootstrap already claimed elsewhere — seed skipped.");
+      return;
+    }
+
+    try {
+      await registerWithEmailAndPassword({
+        userId: systemDatabaseName,
+        projectCode: systemProjectCode,
+        name: "Admin",
+        email: envEmail,
+        password: envPass,
+        roles: ["admin"],
+      });
+    } catch (error) {
+      await releaseSetupSlot();
+      throw error;
+    }
     Logger.info("Admin created!");
   } catch (error) {
     Logger.error("Failed to create admin user: " + error.message, { stack: error.stack });

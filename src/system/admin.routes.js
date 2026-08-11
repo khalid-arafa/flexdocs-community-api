@@ -11,6 +11,7 @@ const {
 } = require("../core/db_service");
 const constants = require("../constants");
 const Logger = require("../utils/logger");
+const { isValidObjectId } = require("../utils/validators");
 
 const { sendAuthSocketEvent } = require("../sockets/auth.sockets");
 
@@ -79,6 +80,8 @@ router.post("/projects", async (req, res) => {
 });
 
 router.get("/accounts/:id", async (req, res) => {
+  if (!isValidObjectId(req.params.id))
+    return res.status(400).json({ message: "id is not valid" });
   try {
     const user = await getDocument({
       userId: constants.systemDatabaseName,
@@ -103,6 +106,8 @@ router.get("/accounts/:id", async (req, res) => {
 
 router.delete("/accounts/:id", systemApiAuth, async (req, res) => {
   auditLog(req, "admin_delete_account", { targetAccountId: req.params.id });
+  if (!isValidObjectId(req.params.id))
+    return res.status(400).json({ message: "id is not valid" });
   try {
     const userresult = await deleteDocument({
       userId: constants.systemDatabaseName,

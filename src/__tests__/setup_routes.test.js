@@ -6,6 +6,14 @@ jest.mock("../utils/logger", () => ({
 }));
 jest.mock("../core/db_service");
 jest.mock("../core/auth_service");
+// POST /setup now claims the one-time admin-bootstrap slot atomically before
+// creating anything, and that claim is a real insert through getUserDB rather
+// than a db_service call — so it has to be mocked here too, or the route waits
+// on a live Mongo connection that never arrives.
+jest.mock("../utils/setup_lock", () => ({
+  claimSetupSlot: jest.fn().mockResolvedValue(true),
+  releaseSetupSlot: jest.fn().mockResolvedValue(undefined),
+}));
 // passthrough rate limiter so tests aren't throttled
 jest.mock("../middleware/rate_limit.middleware", () => ({
   authLimiter: (_req, _res, next) => next(),
@@ -114,5 +122,55 @@ describe("Setup Routes", () => {
       expect(res.status).toBe(400);
       expect(registerWithEmailAndPassword).not.toHaveBeenCalled();
     });
+  });
+});
+
+// The claim is what makes setup one-time under concurrency; needsSetup() alone
+// is a read and two simultaneous callers both pass it.
+describe("POST /setup one-time claim", () => {
+  const { claimSetupSlot, releaseSetupSlot } = require("../utils/setup_lock");
+
+  beforeEach(() => {
+    process.env.SETUP_TOKEN = "secret-token";
+    jest.clearAllMocks();
+    countDocuments.mockResolvedValue(0);
+    claimSetupSlot.mockResolvedValue(true);
+    releaseSetupSlot.mockResolvedValue(undefined);
+  });
+
+  it("refuses the caller that loses the claim, even though setup looked needed", async () => {
+    claimSetupSlot.mockResolvedValue(false);
+    const res = await request(makeApp()).post("/setup").send(VALID_BODY);
+    expect(res.status).toBe(403);
+    expect(registerWithEmailAndPassword).not.toHaveBeenCalled();
+  });
+
+  it("claims before creating the admin, never after", async () => {
+    const order = [];
+    claimSetupSlot.mockImplementation(async () => {
+      order.push("claim");
+      return true;
+    });
+    registerWithEmailAndPassword.mockImplementation(async () => {
+      order.push("create");
+      return { uid: "1" };
+    });
+    await request(makeApp()).post("/setup").send(VALID_BODY);
+    expect(order).toEqual(["claim", "create"]);
+  });
+
+  // Otherwise one rejected password on the first-ever attempt would lock the
+  // system out of creating an admin at all.
+  it("releases the claim when creating the admin fails", async () => {
+    registerWithEmailAndPassword.mockRejectedValue(new Error("weak password"));
+    const res = await request(makeApp()).post("/setup").send(VALID_BODY);
+    expect(res.status).toBe(400);
+    expect(releaseSetupSlot).toHaveBeenCalled();
+  });
+
+  it("keeps the claim when the admin is created successfully", async () => {
+    registerWithEmailAndPassword.mockResolvedValue({ uid: "1" });
+    await request(makeApp()).post("/setup").send(VALID_BODY);
+    expect(releaseSetupSlot).not.toHaveBeenCalled();
   });
 });
