@@ -1,0 +1,45 @@
+services:
+
+  # ── STAGING MongoDB ──
+  #
+  # Phase 0 of the remediation plan: a place to test against that is not
+  # production. `npm run dev` has always pointed at the SAME FlexDocs project
+  # as production, which is why every risky task in the plan (rule changes,
+  # auth failures, realtime disconnects, data migrations) has been deferred —
+  # verifying them meant deliberately breaking live data.
+  #
+  # Deliberately a single-node REPLICA SET, not a standalone: production runs
+  # one, and change streams (project.realtimeChangeStreams) only exist there.
+  # Staging that could not exercise them would be useless for the one feature
+  # most in need of a rehearsal.
+  #
+  # No auth and a non-default port, because this holds nothing worth
+  # protecting and must never be mistaken for the production instance.
+  mongodb-staging:
+    image: mongo:7
+    container_name: flexdocs-mongo-staging
+    command: ["mongod", "--replSet", "rs-staging", "--bind_ip_all", "--quiet"]
+    ports:
+      - "27019:27017"
+    volumes:
+      - staging-mongo-data:/data/db
+    healthcheck:
+      # Initiates the replica set on first start and reports healthy only once
+      # a PRIMARY has been elected — without this, the API can connect before
+      # an election completes and the change-stream probe sees no setName.
+      test: >
+        mongosh --quiet --eval '
+          try { rs.status() } catch (e) {
+            rs.initiate({_id:"rs-staging",members:[{_id:0,host:"localhost:27017"}]})
+          }
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+        '
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  staging-mongo-data:
+    name: flexdocs-staging-mongo-data
