@@ -105,28 +105,50 @@ async function socketAuth(socket, next) {
     if (!project || !project.isActive)
       return next(new Error("Authentication error: Project not found"));
 
-    // Every project token must be a currently-registered credential — not just
-    // the expired ones. Deliberately after the project lookup, since the stored
-    // hashes live on the project document.
+    // Is this token a currently-registered credential on the project?
     //
-    // This check used to run only when `expired` was true, which quietly made
-    // the comment above it false: deleting a credential in the dashboard
-    // revoked a token on REST immediately (projectApiAuth compares hashes on
-    // every request) but did nothing on sockets until the token happened to
-    // age out — up to 30 days later. Revocation that works on one transport
-    // and not the other is worse than either, because the operator believes
-    // the token is dead.
-    //
-    // Costs nothing extra: it is a hash and a compare against a document
-    // already in hand. `_system` is exempt because it is synthesised above
-    // rather than read from Mongo, so it has no credential list to match —
-    // `exp` remains its only revocation signal, which is why the expiry check
-    // for it stays in place further up.
-    if (
-      decodedProjectToken.code !== "_system" &&
-      !tokenMatchesStoredCredential(project, projectToken)
-    )
-      return next(new Error("Authentication error: Invalid project token"));
+    // `_system` is exempt: it is synthesised above rather than read from Mongo
+    // and has no credential list to match, so `exp` remains its only
+    // revocation signal — hence the expiry check for it further up.
+    const registered =
+      decodedProjectToken.code === "_system" ||
+      tokenMatchesStoredCredential(project, projectToken);
+
+    if (!registered) {
+      // An EXPIRED token has nothing else vouching for it, so a missing
+      // credential is fatal. This is the long-standing behaviour.
+      if (expired)
+        return next(new Error("Authentication error: Invalid project token"));
+
+      // An UNEXPIRED one is a different matter, and enforcing here caused a
+      // production outage worth recording. REST revokes instantly (it hashes
+      // on every request) while sockets historically did not, so tightening
+      // this looked like closing an inconsistency — but a live site was
+      // running on a token that is not in its project's credential list, and
+      // it had been working for as long as the token stayed unexpired.
+      // Rejecting it took file uploads down with no error the client could
+      // see: socket.io buffers the emit and the upload hangs at "preparing"
+      // forever.
+      //
+      // So warn loudly and allow, unless an operator opts in. The warning is
+      // the point — it names the project and the hash actually presented, so
+      // the mismatch can be found and fixed BEFORE enforcement is switched on,
+      // rather than discovered as an outage afterwards.
+      Logger.warn(
+        "Socket project token is not a registered credential — allowed. " +
+          "Set ENFORCE_SOCKET_PROJECT_CREDENTIAL=true to reject instead.",
+        {
+          project: decodedProjectToken.code,
+          presentedHash: hashProjectToken(projectToken),
+          storedHashes: (project.credentials || [])
+            .map((c) => c?.creds?.projectTokenHash)
+            .filter(Boolean),
+        },
+      );
+
+      if (process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL === "true")
+        return next(new Error("Authentication error: Invalid project token"));
+    }
 
     socket.project = project;
 

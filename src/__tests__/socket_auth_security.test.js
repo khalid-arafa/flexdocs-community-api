@@ -7,11 +7,12 @@
 // stored hash and never decodes the JWT). That split broke realtime and file
 // uploads only, with no error surfaced to the client.
 //
-// #3 regression: the hash check then ran ONLY for expired tokens, so deleting
-// a credential revoked it instantly on REST but not on sockets, where it kept
-// working until the token happened to age out. Every project token is now
-// checked against the credential list regardless of age — that list, not the
-// clock, is what makes a project token valid.
+// #3: the hash check runs for every token, but only an EXPIRED one is rejected
+// for failing it. Enforcing on unexpired tokens took production uploads down —
+// a live site was running on a token absent from its project's credential list
+// and had been fine for as long as it stayed unexpired. So an unexpired
+// mismatch warns (naming the presented hash) and is allowed, unless
+// ENFORCE_SOCKET_PROJECT_CREDENTIAL=true.
 
 jest.mock("../utils/logger", () => ({
   log: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
@@ -65,27 +66,74 @@ describe("socketAuth project-token binding", () => {
   });
 });
 
-// The credential list is the authority for a project token, on both
-// transports. Age is irrelevant; presence on the project is everything.
-describe("socketAuth credential check applies regardless of expiry", () => {
-  beforeEach(() => jest.clearAllMocks());
+// An unexpired token that is not in the credential list is reported, not
+// refused — see the header note. An expired one is still refused.
+describe("socketAuth credential check on unexpired tokens", () => {
+  const Logger = require("../utils/logger");
+  const ENV = process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
 
-  it("rejects an UNEXPIRED token whose credential was deleted", async () => {
+  beforeEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    if (ENV === undefined) delete process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
+    else process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = ENV;
+  });
+
+  // The production regression, pinned: this exact case took uploads down when
+  // it rejected, with no error the client could see.
+  it("ALLOWS an unexpired token whose credential is missing, and warns", async () => {
     verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
-    // Rotated: the project now carries a different credential.
-    getDocument.mockResolvedValue(projectWithCredential("the-new-token"));
+    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+    const socket = socketWith("not-registered");
     const next = jest.fn();
-    await socketAuth(socketWith("the-revoked-token"), next);
+    await socketAuth(socket, next);
+
+    expect(next).toHaveBeenCalledWith(); // no error
+    expect(socket.project.code).toBe("myproj");
+    expect(Logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not a registered credential"),
+      expect.objectContaining({ project: "myproj", presentedHash: expect.any(String) }),
+    );
+  });
+
+  // The warning has to name the hash actually presented, or it cannot be
+  // matched against the credential list to find the mismatch.
+  it("logs the presented hash alongside the stored ones", async () => {
+    verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+    await socketAuth(socketWith("not-registered"), jest.fn());
+
+    const [, meta] = Logger.warn.mock.calls[0];
+    expect(meta.presentedHash).toBe(hashProjectToken("not-registered"));
+    expect(meta.storedHashes).toEqual([hashProjectToken("the-registered-token")]);
+  });
+
+  it("rejects it once an operator opts in", async () => {
+    process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = "true";
+    verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+    const next = jest.fn();
+    await socketAuth(socketWith("not-registered"), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 
-  it("rejects an unexpired token on a project with no credentials at all", async () => {
+  it("allows an unexpired token on a project with no credentials at all", async () => {
     verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
     getDocument.mockResolvedValue({
       code: "myproj", userId: "owner", isActive: true, credentials: [],
     });
     const next = jest.fn();
     await socketAuth(socketWith("orphaned"), next);
+    expect(next).toHaveBeenCalledWith();
+  });
+
+  // Unchanged and still enforced: an expired token has nothing else vouching
+  // for it, so a missing credential stays fatal.
+  it("still rejects an EXPIRED token whose credential is missing", async () => {
+    verifyToken.mockReturnValue({ expired: true });
+    decodeExpiredToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+    getDocument.mockResolvedValue(projectWithCredential("some-other-token"));
+    const next = jest.fn();
+    await socketAuth(socketWith("expired-and-unregistered"), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 
@@ -99,7 +147,6 @@ describe("socketAuth credential check applies regardless of expiry", () => {
     expect(socket.project.code).toBe("myproj");
   });
 
-  // Revocation must not depend on which transport the client happens to use.
   it("treats an expired-but-registered and an unexpired-but-registered token alike", async () => {
     getDocument.mockResolvedValue(projectWithCredential("same-token"));
 
