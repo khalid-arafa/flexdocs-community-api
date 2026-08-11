@@ -65,6 +65,19 @@ function invalidateProjectCache(code) {
 async function projectApiAuth(req, res, next) {
   if (!req.params.projectCode)
     return res.status(404).json({ message: "Project code not provided!" });
+  // Inclusion projection: anything NOT listed here is absent from req.project,
+  // whatever its value in Mongo. Every per-project feature flag must therefore
+  // be listed, or it reads as `undefined` on the REST path and the feature it
+  // gates is unreachable no matter what an admin sets on the document.
+  //
+  // That is exactly what happened to realtimePerDocCheck and manualIndexes:
+  // both were added to PROJECT_UPDATABLE_FIELDS so they could be written, and
+  // both were read from req.project, but neither was ever added here — so the
+  // realtime per-document rule re-check could not be switched on at all, and
+  // manual-index mode never suppressed auto-indexing. The socket path was
+  // unaffected because socket_auth.middleware.js fetches the document with no
+  // projection, which is why storageRealtimeCheck (read off socket.project)
+  // worked while these two silently did not.
   const select = {
     name: 1,
     code: 1,
@@ -75,6 +88,11 @@ async function projectApiAuth(req, res, next) {
     authRules: 1,
     storageRules: 1,
     credentials: 1,
+    // per-project feature flags — see the note above before removing any
+    realtimePerDocCheck: 1,
+    storageRealtimeCheck: 1,
+    manualIndexes: 1,
+    realtimeChangeStreams: 1,
   };
 
   if (req.params.projectCode === "_system" && req.byAdmin) {

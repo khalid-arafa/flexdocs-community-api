@@ -15,7 +15,60 @@ const DbRulesService = require("../core/db_rules_service");
 //
 // A Map keyed by colPath+query replaces the previous array: dedup was an O(n)
 // JSON.stringify comparison per subscribe, and entries were only ever appended.
+//
+// Since K3 this registry stores *filters only*. Subscriber discovery is done
+// with real Socket.IO rooms (see colRoom/filteredRoom below) — a room can't
+// carry a per-socket query, so both structures are needed, but the fan-out no
+// longer walks this object to find out who is listening.
 const watchingCollectionsUpdates = {};
+
+/**
+ * Room holding every socket with at least one watch on `colPath`.
+ *
+ * Prefixed so it can never collide with a `watch-doc` room, which is named
+ * after a raw document id.
+ */
+function colRoom(colPath) {
+  return `col:${colPath}`;
+}
+
+/**
+ * Subset of `colRoom(colPath)` that needs an individually-built payload
+ * because *every* watch it holds on this collection carries a filter.
+ *
+ * A socket holding both a filtered and an unfiltered watch is deliberately
+ * NOT a member: an unfiltered watch already entitles it to the whole batch,
+ * so it can take the single broadcast with everyone else.
+ */
+function filteredRoom(colPath) {
+  return `colq:${colPath}`;
+}
+
+/**
+ * Reconciles this socket's room membership for `colPath` with the watches it
+ * currently holds. Called after every add and every remove, so membership is
+ * derived state and can't drift out of sync with the registry.
+ */
+function syncWatchRooms(socket, colPath) {
+  const watches = watchingCollectionsUpdates[socket.id];
+  let holdsAny = false;
+  let holdsUnfiltered = false;
+  if (watches) {
+    for (const watch of watches.values()) {
+      if (watch.colPath !== colPath) continue;
+      holdsAny = true;
+      if (!watch.query) holdsUnfiltered = true;
+    }
+  }
+  if (!holdsAny) {
+    socket.leave(colRoom(colPath));
+    socket.leave(filteredRoom(colPath));
+    return;
+  }
+  socket.join(colRoom(colPath));
+  if (holdsUnfiltered) socket.leave(filteredRoom(colPath));
+  else socket.join(filteredRoom(colPath));
+}
 
 /** Order-independent key, so the same filter written two ways dedups. */
 function watchKey(colPath, query) {
@@ -65,7 +118,15 @@ function dbSockets(io) {
         socket.emit("error", {
           message: `Subscription limit reached (${socketLimits.maxWatchesPerSocket}); unwatch before watching more.`,
         });
+        // Rejected at the cap — leave room membership exactly as it was.
+        return;
       }
+      syncWatchRooms(socket, colPath);
+    };
+
+    const unsubscribe = (colPath) => {
+      removeWatching(watchingCollectionsUpdates, socket.id, colPath);
+      syncWatchRooms(socket, colPath);
     };
 
     socket.on("set-user-token", async (data) => {
@@ -141,11 +202,7 @@ function dbSockets(io) {
     });
 
     const unwatchCollections = () => {
-      removeWatching(
-        watchingCollectionsUpdates,
-        socket.id,
-        `${socket.project.code}/collections`,
-      );
+      unsubscribe(`${socket.project.code}/collections`);
     };
     socket.on("unwatch-collections", unwatchCollections);
     socket.on("stop-watch-collections", unwatchCollections);
@@ -160,11 +217,7 @@ function dbSockets(io) {
     const unwatchCol = (data) => {
       const col = typeof data === "string" ? data : data && data.col;
       if (!col) return;
-      removeWatching(
-        watchingCollectionsUpdates,
-        socket.id,
-        `${socket.project.code}/${col}`,
-      );
+      unsubscribe(`${socket.project.code}/${col}`);
     };
     socket.on("unwatch-col-updates", unwatchCol);
     socket.on("stop-watch-col-updates", unwatchCol);
@@ -235,37 +288,95 @@ async function filterVisibleDocsForSocket({ liveSocket, rulesService, col, docs 
   }
 }
 
+/** Room members as a plain array; `[]` when the room doesn't exist. */
+function roomMembers(io, room) {
+  const members = io.sockets.adapter.rooms.get(room);
+  return members ? [...members] : [];
+}
+
+/** The watches this socket holds on exactly this collection. */
+function watchesOn(socketId, colPath) {
+  const held = watchingCollectionsUpdates[socketId];
+  if (!held) return [];
+  const watches = [];
+  for (const watch of held.values()) {
+    if (watch.colPath === colPath) watches.push(watch);
+  }
+  return watches;
+}
+
+/**
+ * Fan-out for a collection-level change.
+ *
+ * K3 moved subscriber discovery onto real Socket.IO rooms. Two things changed,
+ * neither of them visible on the wire — the event name and payload shape are
+ * identical to what this emitted before:
+ *
+ * - **Discovery** used to scan every socket in `watchingCollectionsUpdates`,
+ *   including every socket watching some entirely unrelated collection, on
+ *   every single write. It now reads the membership of one room, so the cost
+ *   is proportional to this collection's subscribers rather than to the whole
+ *   server's subscriptions.
+ * - **Delivery** to unfiltered subscribers — the overwhelmingly common case —
+ *   is now one `io.to(room).except(...)` broadcast, which Socket.IO
+ *   serializes once and writes to each member, instead of a loop of N
+ *   individual emits that serialized the same payload N times.
+ *
+ * Sockets that genuinely need a different payload from everyone else — those
+ * whose watches are all filtered, or all of them when the per-document rule
+ * re-check is on — are excluded from the broadcast and handled one at a time
+ * below, exactly as before.
+ */
 async function sendUpdateCollectionStreamEvent({ colPath, action, data, project }) {
   const docs = Array.isArray(data) ? data : [data];
   if (docs.length === 0) return;
 
+  const io = getIO();
+  if (!io) return;
+
+  const event = `update:${colPath}`;
+  const room = colRoom(colPath);
+  const members = roomMembers(io, room);
+  if (members.length === 0) return;
+
   // Opt-in, default OFF (project.realtimePerDocCheck is undefined on every
-  // project that hasn't explicitly turned it on). Off keeps the loop below
-  // byte-for-byte identical to the pre-K2 behavior — no per-socket admin
-  // lookup or rule evaluation on every push for projects that never asked
-  // for this, so the common case doesn't get slower.
+  // project that hasn't explicitly turned it on). Off keeps delivery
+  // equivalent to the pre-K2 behavior — no per-socket admin lookup or rule
+  // evaluation on every push for projects that never asked for this, so the
+  // common case doesn't get slower.
   const perDocCheckEnabled = Boolean(project && project.realtimePerDocCheck);
+
+  // Broadcast to everyone entitled to the unmodified batch. With the rule
+  // re-check on, nobody is: each socket's batch depends on its own identity.
+  if (!perDocCheckEnabled) {
+    io.to(room).except(filteredRoom(colPath)).emit(event, { [action]: docs });
+  }
+
+  const individual = perDocCheckEnabled
+    ? members
+    : roomMembers(io, filteredRoom(colPath));
+  if (individual.length === 0) return;
+
   const rulesService = perDocCheckEnabled ? new DbRulesService(project.dbRules) : null;
   // colPath is always `${project.code}/${col}` (see subscribe() and its
-  // callers below) or `${project.code}/collections` for the schema-listing
+  // callers) or `${project.code}/collections` for the schema-listing
   // pseudo-collection — strip the project prefix to recover the rule path
   // segment. watch-collections is admin-only at subscribe time (guarded by
   // socketAdminGuard), so a non-admin ever reaching that colPath here would
   // already be an upstream bug; this path only matters for its documents to
   // fail closed rather than throw if that ever happens.
   const col = perDocCheckEnabled ? colPath.slice(project.code.length + 1) : null;
-  const io = getIO();
 
-  for (const socketId of Object.keys(watchingCollectionsUpdates)) {
-    const watches = [];
-    for (const watch of watchingCollectionsUpdates[socketId].values()) {
-      if (watch.colPath === colPath) watches.push(watch);
-    }
+  for (const socketId of individual) {
+    const watches = watchesOn(socketId, colPath);
+    // Room membership without a registry entry shouldn't happen — syncWatchRooms
+    // derives one from the other — but a socket torn down mid-push would look
+    // exactly like this, so skip rather than emit an unfiltered batch.
     if (watches.length === 0) continue;
 
-    // Previously the whole watch array was read as if it were a single entry,
-    // so `.query` was always undefined and every subscriber received every
-    // document regardless of the filter it asked for.
+    // The filter bug this replaced read the whole watch array as a single
+    // entry, so `.query` was always undefined and every subscriber received
+    // every document regardless of what it asked for.
     //
     // One socket may hold several watches on the same collection under
     // different filters; they share a single event name, so it receives the
@@ -285,7 +396,7 @@ async function sendUpdateCollectionStreamEvent({ colPath, action, data, project 
       if (visible.length === 0) continue;
     }
 
-    io.to(socketId).emit(`update:${colPath}`, { [action]: visible });
+    io.to(socketId).emit(event, { [action]: visible });
   }
 }
 
@@ -344,5 +455,8 @@ module.exports = {
     matchesQuery,
     watchKey,
     filterVisibleDocsForSocket,
+    colRoom,
+    filteredRoom,
+    syncWatchRooms,
   },
 };

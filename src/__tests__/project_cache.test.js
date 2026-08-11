@@ -178,3 +178,59 @@ describe("projectApiAuth project document cache", () => {
     expect(getDocument).not.toHaveBeenCalled();
   });
 });
+
+// ─── Per-project feature flags must survive the projection ────────────────
+//
+// projectApiAuth reads the project document with an INCLUSION projection, so a
+// field missing from that `select` is absent from req.project regardless of
+// what Mongo holds. Two flags shipped in that state — writable via
+// PROJECT_UPDATABLE_FIELDS and read by their consumers, but never projected —
+// which made both features impossible to switch on over REST:
+//
+//   realtimePerDocCheck  → db.routes.js passes req.project into the realtime
+//                          fan-out, which reads this to decide whether to
+//                          re-check per-document dbRules on push.
+//   manualIndexes        → db.routes.js computes canCreateIndexes from it, so
+//                          `undefined` meant auto-indexing stayed on always.
+//
+// These assert the flags reach req.project with their real values, which is
+// the only thing the consumers above actually depend on.
+describe("projectApiAuth feature-flag projection", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    invalidateProjectCache("proj1");
+  });
+
+  const FLAGS = [
+    "realtimePerDocCheck",
+    "storageRealtimeCheck",
+    "manualIndexes",
+    "realtimeChangeStreams",
+  ];
+
+  it.each(FLAGS)("asks Mongo for %s", async (flag) => {
+    getDocument.mockResolvedValueOnce(makeProject());
+    await runAuth();
+    expect(getDocument.mock.calls[0][0].select).toHaveProperty(flag, 1);
+  });
+
+  it.each(FLAGS)("surfaces %s on req.project when enabled", async (flag) => {
+    getDocument.mockResolvedValueOnce(makeProject({ [flag]: true }));
+    const { req } = await runAuth();
+    expect(req.project[flag]).toBe(true);
+  });
+
+  it("leaves a flag absent rather than defaulting it to true", async () => {
+    getDocument.mockResolvedValueOnce(makeProject());
+    const { req } = await runAuth();
+    for (const flag of FLAGS) expect(req.project[flag]).toBeUndefined();
+  });
+
+  it("keeps flag values intact across a cache hit", async () => {
+    getDocument.mockResolvedValueOnce(makeProject({ manualIndexes: true }));
+    await runAuth();
+    const { req } = await runAuth();
+    expect(getDocument).toHaveBeenCalledTimes(1);
+    expect(req.project.manualIndexes).toBe(true);
+  });
+});
