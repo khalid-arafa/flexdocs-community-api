@@ -60,6 +60,17 @@ function cloneProjectDoc(value) {
 function invalidateProjectCache(code) {
   projectCache.delete(code);
   projectCacheGeneration.set(code, (projectCacheGeneration.get(code) || 0) + 1);
+  // The change-stream driver runs outside the request cycle and so keeps its
+  // own copy of the project document, including realtimeChangeStreams. Clear
+  // that too, or toggling the flag would not take effect until its TTL lapsed.
+  // Required lazily: core/change_streams.js pulls in the socket layer, which
+  // would otherwise be loaded from inside a middleware module at import time.
+  try {
+    require("../core/change_streams").invalidateProject(code);
+  } catch {
+    // The driver is optional — a deployment that never starts it must not
+    // fail its project writes because of this.
+  }
 }
 
 async function projectApiAuth(req, res, next) {

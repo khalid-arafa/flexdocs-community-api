@@ -158,6 +158,12 @@ const PROJECT_UPDATABLE_FIELDS = [
   // operator decision, ideally made after snapshotting existing indexes via
   // GET /:col/indexes so nothing auto-created gets silently orphaned.
   "manualIndexes",
+  // C6: drive this project's realtime events from MongoDB change streams
+  // instead of emit-after-write, so writes made outside the API are seen and a
+  // crash between write and emit cannot lose one. Has no effect at all unless
+  // the deployment supports change streams (replica set or sharded cluster) —
+  // on standalone MongoDB the driver never starts and this is ignored.
+  "realtimeChangeStreams",
 ];
 
 router.put("/:projectCode", projectApiAuth, async (req, res) => {

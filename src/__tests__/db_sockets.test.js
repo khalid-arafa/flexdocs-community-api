@@ -742,3 +742,105 @@ describe("sendUpdateDocumentStreamEvent (watch-doc room push, K2)", () => {
     expect(delivered).toHaveLength(0);
   });
 });
+
+// ─── C6: handover between the two realtime sources ────────────────────────
+//
+// A write must produce exactly ONE push. Two would mean both sources fired;
+// zero would mean the route went quiet for a stream that isn't actually
+// delivering. Every case below is one or the other of those failures, or the
+// correct handover between them.
+const {
+  setChangeStreamsRunning,
+} = require("../core/realtime_source");
+
+describe("change-stream handover (C6)", () => {
+  const OPTED_IN = { code: "proj1", dbRules: {}, realtimeChangeStreams: true };
+  const OPTED_OUT = { code: "proj1", dbRules: {} };
+
+  afterEach(() => setChangeStreamsRunning(false));
+
+  async function push(project, source, colPath = COL) {
+    await sendUpdateCollectionStreamEvent({
+      colPath,
+      action: "update",
+      data: [{ _id: "1" }],
+      project,
+      ...(source ? { source } : {}),
+    });
+  }
+
+  it("drops the route push once the stream is delivering for this project", async () => {
+    subscribe(connect("s1"), COL, {});
+    setChangeStreamsRunning(true);
+    await push(OPTED_IN);
+    expect(delivered).toHaveLength(0);
+  });
+
+  it("delivers that same write when it arrives from the stream", async () => {
+    subscribe(connect("s1"), COL, {});
+    setChangeStreamsRunning(true);
+    await push(OPTED_IN, "change-stream");
+    expect(payloadsFor("s1")).toEqual([{ update: [{ _id: "1" }] }]);
+  });
+
+  it("keeps the route push for a project that has not opted in", async () => {
+    subscribe(connect("s1"), COL, {});
+    setChangeStreamsRunning(true);
+    await push(OPTED_OUT);
+    expect(payloadsFor("s1")).toHaveLength(1);
+  });
+
+  // The failure mode that would silence realtime in production: an opted-in
+  // project whose stream died must fall back to emit-after-write, not stop.
+  it("keeps the route push when the stream is not running", async () => {
+    subscribe(connect("s1"), COL, {});
+    setChangeStreamsRunning(false);
+    await push(OPTED_IN);
+    expect(payloadsFor("s1")).toHaveLength(1);
+  });
+
+  it("never suppresses the collections pseudo stream, which the oplog cannot describe", async () => {
+    const colPath = "proj1/collections";
+    subscribe(connect("s1"), colPath, {});
+    setChangeStreamsRunning(true);
+    await push(OPTED_IN, undefined, colPath);
+    expect(payloadsFor("s1", `update:${colPath}`)).toHaveLength(1);
+  });
+
+  it("applies the same handover to single-document room pushes", async () => {
+    const s1 = connect("s1");
+    s1.join("doc1");
+    setChangeStreamsRunning(true);
+
+    await sendUpdateDocumentStreamEvent({
+      project: OPTED_IN, col: "posts", room: "doc1", action: "update", doc: { _id: "doc1" },
+    });
+    expect(delivered).toHaveLength(0);
+
+    await sendUpdateDocumentStreamEvent({
+      project: OPTED_IN, col: "posts", room: "doc1", action: "update",
+      doc: { _id: "doc1" }, source: "change-stream",
+    });
+    expect(payloadsFor("s1", "doc1")).toHaveLength(1);
+  });
+
+  it("leaves document pushes alone when the project has not opted in", async () => {
+    const s1 = connect("s1");
+    s1.join("doc1");
+    setChangeStreamsRunning(true);
+    await sendUpdateDocumentStreamEvent({
+      project: OPTED_OUT, col: "posts", room: "doc1", action: "update", doc: { _id: "doc1" },
+    });
+    expect(payloadsFor("s1", "doc1")).toHaveLength(1);
+  });
+
+  it("does not throw on a document push with no project", async () => {
+    const s1 = connect("s1");
+    s1.join("doc1");
+    setChangeStreamsRunning(true);
+    await sendUpdateDocumentStreamEvent({
+      room: "doc1", action: "delete", doc: { _id: "doc1" },
+    });
+    expect(payloadsFor("s1", "doc1")).toHaveLength(1);
+  });
+});

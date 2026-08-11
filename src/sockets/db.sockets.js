@@ -10,6 +10,27 @@ const {
   isAdminSocket,
 } = require("../middleware/db_rules.middleware");
 const DbRulesService = require("../core/db_rules_service");
+const { changeStreamsActiveFor } = require("../core/realtime_source");
+
+/**
+ * Should this route-originated push be dropped because the change stream will
+ * report the same write? (C6 — see core/change_streams.js.)
+ *
+ * Only document collections are handed over. `${code}/collections` is a pseudo
+ * collection carrying collection-list and document-count changes, which the
+ * oplog does not describe in that shape, so it stays route-driven always —
+ * otherwise the dashboard's collection list would freeze the moment a project
+ * enabled change streams.
+ *
+ * Pushes originating FROM the change stream are never suppressed, and neither
+ * is anything when the stream isn't running, so a stream that dies falls back
+ * to emit-after-write instead of going quiet.
+ */
+function supersededByChangeStream({ source, project, colPath }) {
+  if (source === "change-stream") return false;
+  if (!changeStreamsActiveFor(project)) return false;
+  return colPath !== `${project.code}/collections`;
+}
 
 // socketId → Map<watchKey, { colPath, query }>
 //
@@ -327,7 +348,9 @@ function watchesOn(socketId, colPath) {
  * re-check is on — are excluded from the broadcast and handled one at a time
  * below, exactly as before.
  */
-async function sendUpdateCollectionStreamEvent({ colPath, action, data, project }) {
+async function sendUpdateCollectionStreamEvent({ colPath, action, data, project, source = "write" }) {
+  if (supersededByChangeStream({ source, project, colPath })) return;
+
   const docs = Array.isArray(data) ? data : [data];
   if (docs.length === 0) return;
 
@@ -417,7 +440,12 @@ async function sendUpdateCollectionStreamEvent({ colPath, action, data, project 
  *   exact document since calling watch-doc stops receiving it on the very
  *   next push rather than only on its next resubscribe.
  */
-async function sendUpdateDocumentStreamEvent({ project, col, room, action, doc }) {
+async function sendUpdateDocumentStreamEvent({ project, col, room, action, doc, source = "write" }) {
+  // colPath is only used here to spare the `collections` pseudo stream, which
+  // has no single-document rooms — any real collection reaches the same
+  // verdict, so pass the one this push is for.
+  if (supersededByChangeStream({ source, project, colPath: `${project && project.code}/${col}` })) return;
+
   const io = getIO();
 
   if (!(project && project.realtimePerDocCheck)) {

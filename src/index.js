@@ -9,6 +9,7 @@ const cookieParser = require("cookie-parser");
 const validateJsonBody = require("./middleware/validate_json_body.middleware");
 const { DatabaseClient, ensureCriticalIndexes } = require("./core/client");
 const { socket_connection_init } = require("./sockets/io_connect");
+const { startChangeStreams, stopChangeStreams } = require("./core/change_streams");
 const { dynamicCors } = require("./middleware/cors.middleware");
 const { createAdminUser } = require("./seeds/createAdmin");
 const { errorHandler } = require("./middleware/error_handler.middleware");
@@ -95,6 +96,13 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 3000;
 DatabaseClient.connect().then(async () => {
   await ensureCriticalIndexes();
+  // Probes for change-stream support and starts watching only if the
+  // deployment has it. Deliberately not awaited and never fatal: a standalone
+  // MongoDB simply keeps realtime on emit-after-write (see
+  // core/change_streams.js), and the server must come up either way.
+  startChangeStreams().catch((error) => {
+    Logger.error("Change stream: startup failed", { error: error.message });
+  });
   server.listen(PORT, () => {
     Logger.info(`Server running on port ${PORT}`);
   });
@@ -105,8 +113,11 @@ function shutdown(signal) {
   Logger.info(`${signal} received. Shutting down gracefully...`);
   server.close(() => {
     Logger.info("HTTP server closed");
-    io.close(() => {
+    io.close(async () => {
       Logger.info("Socket.IO closed");
+      // Before closing the client: the stream holds a cursor on it, and
+      // closing the client under it logs a spurious failure.
+      await stopChangeStreams();
       DatabaseClient.close().then(() => {
         Logger.info("MongoDB connection closed");
         process.exit(0);
