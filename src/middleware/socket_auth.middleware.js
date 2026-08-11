@@ -45,19 +45,21 @@ async function socketAuth(socket, next) {
 
     // An expired project token is not automatically dead here.
     //
-    // REST (projectApiAuth) authenticates a project token by SHA-256 hashing it
-    // and comparing against the project's stored `projectTokenHash` — it never
-    // decodes the JWT, so `exp` has never been enforced on that path. Sockets
-    // were the only place it was, which meant a project token silently kept
-    // working for every REST call while realtime and file uploads broke the
-    // moment it aged out. Nothing surfaces that to the client: socket.io just
-    // buffers the emit, so an upload sits at 0% forever.
+    // Project tokens are project-level credentials, not user sessions, and
+    // their authority comes from the project document rather than the clock:
+    // REST (projectApiAuth) authenticates one by SHA-256 hashing it and
+    // comparing against the project's stored `projectTokenHash`, and never
+    // decodes the JWT at all. `exp` has therefore never been enforced on that
+    // path. Sockets were the only place it was, which meant a token silently
+    // kept working for every REST call while realtime and file uploads broke
+    // the moment it aged out — and nothing surfaces that to the client, since
+    // socket.io just buffers the emit and an upload sits at 0% forever.
     //
-    // So fall back to the same authority REST uses. The signature is still
-    // verified (`decodeExpiredToken` only relaxes `exp`), and an expired token
-    // must additionally prove it is a *currently registered* credential on the
-    // project — a strictly stronger requirement than an unexpired one faces.
-    // Deleting or rotating the credential in the dashboard still revokes it.
+    // So use the same authority REST does. The signature is still verified
+    // (`decodeExpiredToken` only relaxes `exp`), and the credential check
+    // below applies to every token regardless of age. Revocation is deleting
+    // or rotating the credential in the dashboard; the `exp` claim these
+    // tokens carry is vestigial for real projects.
     const expired = Boolean(decodedProjectToken?.expired);
     if (expired) {
       decodedProjectToken = decodeExpiredToken(projectToken);
@@ -103,9 +105,27 @@ async function socketAuth(socket, next) {
     if (!project || !project.isActive)
       return next(new Error("Authentication error: Project not found"));
 
-    // The hash check that lets an expired token through. Deliberately after the
-    // project lookup — the stored hashes live on the project document.
-    if (expired && !tokenMatchesStoredCredential(project, projectToken))
+    // Every project token must be a currently-registered credential — not just
+    // the expired ones. Deliberately after the project lookup, since the stored
+    // hashes live on the project document.
+    //
+    // This check used to run only when `expired` was true, which quietly made
+    // the comment above it false: deleting a credential in the dashboard
+    // revoked a token on REST immediately (projectApiAuth compares hashes on
+    // every request) but did nothing on sockets until the token happened to
+    // age out — up to 30 days later. Revocation that works on one transport
+    // and not the other is worse than either, because the operator believes
+    // the token is dead.
+    //
+    // Costs nothing extra: it is a hash and a compare against a document
+    // already in hand. `_system` is exempt because it is synthesised above
+    // rather than read from Mongo, so it has no credential list to match —
+    // `exp` remains its only revocation signal, which is why the expiry check
+    // for it stays in place further up.
+    if (
+      decodedProjectToken.code !== "_system" &&
+      !tokenMatchesStoredCredential(project, projectToken)
+    )
       return next(new Error("Authentication error: Invalid project token"));
 
     socket.project = project;

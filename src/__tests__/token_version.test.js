@@ -96,6 +96,19 @@ describe("checkDbUserApiAuth tokenVersion check", () => {
 
 describe("socketAuth tokenVersion check", () => {
   const { socketAuth } = require("../middleware/socket_auth.middleware");
+  // Not mocked — socketAuth hashes the presented project token and requires a
+  // match on the project's credential list, whatever the token's age, so these
+  // fixtures have to register "proj-jwt" the way the dashboard would.
+  const { hashProjectToken } = require("../utils/helper");
+
+  const PROJECT = {
+    code: "myproj",
+    userId: "owner",
+    isActive: true,
+    credentials: [
+      { name: "default", creds: { projectTokenHash: hashProjectToken("proj-jwt") } },
+    ],
+  };
 
   function socketWith(userToken) {
     return {
@@ -112,7 +125,7 @@ describe("socketAuth tokenVersion check", () => {
       return null;
     });
     getDocument.mockImplementation(async ({ collectionName, query }) => {
-      if (collectionName === "projects") return { code: "myproj", userId: "owner", isActive: true };
+      if (collectionName === "projects") return PROJECT;
       if (query && query._id === "u1") return { _id: "u1" }; // no tokenVersion field
       return null;
     });
@@ -133,7 +146,7 @@ describe("socketAuth tokenVersion check", () => {
       return null;
     });
     getDocument.mockImplementation(async ({ collectionName, query }) => {
-      if (collectionName === "projects") return { code: "myproj", userId: "owner", isActive: true };
+      if (collectionName === "projects") return PROJECT;
       if (query && query._id === "u1") return { _id: "u1", tokenVersion: 1 }; // revoked
       return null;
     });
