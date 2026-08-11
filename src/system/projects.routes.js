@@ -16,6 +16,7 @@ const {
   uploadsPath,
 } = require("../constants");
 const { projectApiAuth, invalidateProjectCache } = require("../middleware/project_auth.middleware");
+const { isValidAuthTokenExpiry } = require("../utils/token_expiry");
 const router = express.Router();
 const fs = require("fs");
 const { generateProjectCreds } = require("../utils/helper");
@@ -164,6 +165,11 @@ const PROJECT_UPDATABLE_FIELDS = [
   // the deployment supports change streams (replica set or sharded cluster) —
   // on standalone MongoDB the driver never starts and this is ignored.
   "realtimeChangeStreams",
+  // N6/B9: how long this project's auth tokens live, e.g. "30d", "7d", "1d".
+  // Unset means the 30-day default. Only shorten it once this project's
+  // clients can refresh (Flutter SDK >= 0.2.0, JS SDK with refresh support) —
+  // otherwise users are logged out mid-session when a token lapses.
+  "authTokenExpiry",
 ];
 
 router.put("/:projectCode", projectApiAuth, async (req, res) => {
@@ -180,6 +186,24 @@ router.put("/:projectCode", projectApiAuth, async (req, res) => {
     }
     if (Object.keys(updateData).length === 0)
       return res.status(400).json({ message: "No updatable fields provided" });
+
+    // Rejected at the boundary rather than absorbed silently. authTokenExpiryFor
+    // does fall back to the default for an unreadable stored value — it has to,
+    // since refusing to mint a token would lock a project's users out — but an
+    // admin typing "7days" deserves an error, not a setting that looks applied
+    // and isn't. Empty string and null are allowed: they mean "back to default".
+    if (
+      updateData.authTokenExpiry !== undefined &&
+      updateData.authTokenExpiry !== null &&
+      updateData.authTokenExpiry !== "" &&
+      !isValidAuthTokenExpiry(updateData.authTokenExpiry)
+    ) {
+      return res.status(400).json({
+        message:
+          "authTokenExpiry must be a duration like \"30d\", \"7d\", \"12h\" or \"90m\", " +
+          "between 5 minutes and 30 days. Omit it or send \"\" to use the default.",
+      });
+    }
 
     const result = await updateDocument({
       userId: req.project.userId,

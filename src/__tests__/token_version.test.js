@@ -210,11 +210,11 @@ describe("auth.routes.js revoke/refresh endpoints", () => {
   // leaves req.sender exactly as this test app's own middleware set it, so
   // these tests exercise the route handlers themselves against a
   // known-already-authenticated req.sender.
-  function createApp({ sender } = {}) {
+  function createApp({ sender, project } = {}) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.project = { code: "testproject", userId: "_system" };
+      req.project = { code: "testproject", userId: "_system", ...project };
       req.sender = sender;
       next();
     });
@@ -266,11 +266,49 @@ describe("auth.routes.js revoke/refresh endpoints", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.token).toBe("brand-new-jwt");
-      expect(getToken).toHaveBeenCalledWith({
-        userId: "user-id",
-        project: "testproject",
-        tokenVersion: 4,
-      });
+      expect(getToken).toHaveBeenCalledWith(
+        {
+          userId: "user-id",
+          project: "testproject",
+          tokenVersion: 4,
+        },
+        // N6: the refreshed token gets the project's configured lifetime. This
+        // project sets none, so it must be the unchanged 30-day default.
+        { expiresIn: "30d" },
+      );
+    });
+
+    // N6: a refresh that silently reverted to 30d would quietly undo the
+    // shortening for anyone who stayed signed in, which is the whole population
+    // the ladder is meant to cover.
+    it("honours the project's configured token lifetime", async () => {
+      const res = await request(
+        createApp({
+          sender: { _id: "user-id", tokenVersion: 0 },
+          project: { authTokenExpiry: "1d" },
+        }),
+      ).post("/refresh-token");
+
+      expect(res.status).toBe(200);
+      expect(getToken).toHaveBeenCalledWith(
+        expect.any(Object),
+        { expiresIn: "1d" },
+      );
+    });
+
+    it("falls back to the default when the stored lifetime is unreadable", async () => {
+      const res = await request(
+        createApp({
+          sender: { _id: "user-id", tokenVersion: 0 },
+          project: { authTokenExpiry: "7days" },
+        }),
+      ).post("/refresh-token");
+
+      expect(res.status).toBe(200);
+      expect(getToken).toHaveBeenCalledWith(
+        expect.any(Object),
+        { expiresIn: "30d" },
+      );
     });
 
     it("returns 401 when there is no signed-in sender (invalid/expired token)", async () => {

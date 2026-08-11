@@ -25,6 +25,7 @@ const { getPublicBaseUrl } = require("../utils/helper.js");
 const { authLimiter, anonLoginLimiter } = require("../middleware/rate_limit.middleware.js");
 const { zodValidate } = require("../middleware/zod_validate.middleware.js");
 const { stripProtectedAuthFields } = require("../utils/auth_field_guard.js");
+const { authTokenExpiryFor } = require("../utils/token_expiry.js");
 const Logger = require("../utils/logger");
 const {
   dbRegisterSchema,
@@ -62,6 +63,7 @@ router.post("/register-with-email", authLimiter, zodValidate(dbRegisterSchema), 
       password,
       name,
       avatar,
+      expiresIn: authTokenExpiryFor(req.project),
     });
     sendAuthSocketEvent({
       projectCode: req.project.code,
@@ -90,6 +92,7 @@ router.post("/login-with-email", authLimiter, zodValidate(dbLoginSchema), async 
       projectCode: req.project.code,
       email,
       password,
+      expiresIn: authTokenExpiryFor(req.project),
     });
     if (getAuthRule(req.project, "requireEmailVerification") && !user.emailVerified)
       return res.status(403).json({
@@ -122,6 +125,7 @@ router.post("/anonymous-login", anonLoginLimiter, zodValidate(dbAnonymousLoginSc
       req.project.userId,
       req.project.code,
       req.body,
+      { expiresIn: authTokenExpiryFor(req.project) },
     );
     sendAuthSocketEvent({
       projectCode: req.project.code,
@@ -258,11 +262,14 @@ router.post("/revoke-tokens", authLimiter, checkDbUserApiAuth, async (req, res) 
 router.post("/refresh-token", authLimiter, checkDbUserApiAuth, async (req, res) => {
   if (!req.sender)
     return res.status(401).json({ message: "Invalid or expired token" });
-  const token = getToken({
-    userId: req.sender._id,
-    project: req.project.code,
-    tokenVersion: req.sender.tokenVersion || 0,
-  });
+  const token = getToken(
+    {
+      userId: req.sender._id,
+      project: req.project.code,
+      tokenVersion: req.sender.tokenVersion || 0,
+    },
+    { expiresIn: authTokenExpiryFor(req.project) },
+  );
   return res.status(200).json({ token });
 });
 

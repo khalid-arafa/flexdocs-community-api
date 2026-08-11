@@ -104,6 +104,7 @@ async function projectApiAuth(req, res, next) {
     storageRealtimeCheck: 1,
     manualIndexes: 1,
     realtimeChangeStreams: 1,
+    authTokenExpiry: 1,
   };
 
   if (req.params.projectCode === "_system" && req.byAdmin) {

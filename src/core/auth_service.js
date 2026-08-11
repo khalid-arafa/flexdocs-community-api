@@ -25,6 +25,7 @@ async function registerWithEmailAndPassword({
   password,
   avatar,
   roles = [],
+  expiresIn,
 }) {
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(authCollectionName);
@@ -51,11 +52,15 @@ async function registerWithEmailAndPassword({
   );
 
   await collection.insertOne({ ...user, createdAt: new Date() });
+  // Registration mints its token by delegating to login, so the project's
+  // lifetime has to be forwarded here or a newly registered user would get the
+  // 30-day default while every subsequent login got the configured one.
   return await loginWithEmailAndPassword({
     userId,
     projectCode,
     email,
     password,
+    expiresIn,
   });
 }
 
@@ -64,6 +69,7 @@ async function loginWithEmailAndPassword({
   projectCode,
   email,
   password,
+  expiresIn,
 }) {
   const user = await getDocument({
     userId,
@@ -137,11 +143,16 @@ async function loginWithEmailAndPassword({
   // stored value) instantly invalidates every token minted before it — see
   // the version check in user_auth.middleware.js / socket_auth.middleware.js.
   // Default to 0 for accounts created before this field existed.
-  user.token = getToken({
-    userId: user._id,
-    project: projectCode,
-    tokenVersion: user.tokenVersion || 0,
-  });
+  user.token = getToken(
+    {
+      userId: user._id,
+      project: projectCode,
+      tokenVersion: user.tokenVersion || 0,
+    },
+    // undefined falls through to getToken's own default (tokenExpiry.auth),
+    // so a project that never set a lifetime is byte-identical to before.
+    { expiresIn },
+  );
   user.uid = user._id.toString();
   delete user._id;
   delete user.password;
@@ -183,7 +194,7 @@ async function loginWithToken(userId, projectCode, token) {
   return user;
 }
 
-async function anonymousLogin(userId, projectCode, { name, avatar }) {
+async function anonymousLogin(userId, projectCode, { name, avatar }, { expiresIn } = {}) {
   const db = await getUserDB(userId, projectCode);
   const collection = db.collection(authCollectionName);
 
@@ -203,11 +214,14 @@ async function anonymousLogin(userId, projectCode, { name, avatar }) {
 
   // Freshly created — no tokenVersion field yet, so it defaults to 0 (see the
   // comment in loginWithEmailAndPassword above).
-  user.token = getToken({
-    userId: result.insertedId,
-    project: projectCode,
-    tokenVersion: user.tokenVersion || 0,
-  });
+  user.token = getToken(
+    {
+      userId: result.insertedId,
+      project: projectCode,
+      tokenVersion: user.tokenVersion || 0,
+    },
+    { expiresIn },
+  );
   user.uid = result.insertedId.toString();
   return user;
 }
