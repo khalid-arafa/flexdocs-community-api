@@ -21,7 +21,11 @@ const {
 } = require("../utils/file");
 const path = require("path");
 const { sendStorageSocketEvent } = require("../sockets/storage.sockets");
-const { verifyToken } = require("../utils/encryptions");
+const {
+  verifyToken,
+  signStorageUrl,
+  verifyStorageUrlSignature,
+} = require("../utils/encryptions");
 const { zodValidate } = require("../middleware/zod_validate.middleware");
 const { storageGuard, checkStorageRule } = require("../middleware/storage_rules.middleware");
 const { getDocument } = require("../core/db_service");
@@ -221,6 +225,58 @@ router.delete("/files/:fileId", storageGuard("delete", "files", loadFile), async
   }
 });
 
+// Mint a short-lived signed download URL for a file, so the dashboard can
+// produce a shareable/openable link to a PRIVATE file without embedding a
+// reusable token in the URL (see signStorageUrl). Admin-only: the sole caller
+// is the operator dashboard, and gating on the admin flag avoids handing a
+// non-admin a link that would bypass the per-file storage rules the download
+// route enforces on the ?token= path. Placed before the "/:fileId/:filename"
+// catch-all; the three-segment path never collides with it, but keep it here
+// for clarity.
+router.get("/files/:fileId/signed-url", async (req, res, next) => {
+  try {
+    if (!req.isDbAdmin)
+      return res.status(403).json({ message: "Access Denied!" });
+
+    const { fileId } = req.params;
+    const file = await getStorageFile(req.project.code, fileId);
+    if (!file)
+      return res.status(404).json({ message: "File not found!" });
+
+    const size = ["small", "medium", "large"].includes(req.query.size)
+      ? req.query.size
+      : "";
+    // Default 1h, clamped to [1min, 24h]: long enough to open or download,
+    // short enough that a leaked link ages out quickly.
+    const ttl = Math.min(
+      Math.max(parseInt(req.query.ttl, 10) || 3600, 60),
+      24 * 3600
+    );
+    const expires = Math.floor(Date.now() / 1000) + ttl;
+    const filename = `${file.name}.${file.ext}`;
+    const signature = signStorageUrl({
+      projectCode: req.project.code,
+      fileId: String(file._id),
+      filename,
+      size,
+      expires,
+    });
+
+    const params = new URLSearchParams();
+    if (size) params.set("size", size);
+    params.set("expires", String(expires));
+    params.set("signature", signature);
+    const relPath = `projects/${encodeURIComponent(
+      req.project.code
+    )}/storage/${encodeURIComponent(String(file._id))}/${encodeURIComponent(
+      filename
+    )}`;
+    return res.status(200).json({ url: `${relPath}?${params.toString()}`, expires });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // public
 router.get("/:fileId/:filename", async (req, res, next) => {
   try {
@@ -235,42 +291,61 @@ router.get("/:fileId/:filename", async (req, res, next) => {
       return res.status(404).json({ message: "File not found!" });
 
     if (!file.isPublic && !req.isDbAdmin) {
-      if (!token)
-        return res.status(403).json({ message: "Access Denied!" });
-      const decoded = verifyToken(token);
-      if (!decoded || decoded.expired || decoded.project !== req.project.code)
-        return res.status(403).json({ message: "Invalid or expired token!" });
+      // Signed-URL path (preferred): a server-minted, time-limited, file-scoped
+      // grant. The mint endpoint above already made the authorisation decision
+      // (admin-only), so a valid signature stands in for the ?token= + storage
+      // rule checks below and needs no bearer token in the URL. Verified against
+      // the DB-canonical name, not the raw request path, so an NFC/NFD variant
+      // of an Arabic filename doesn't break the signature.
+      const canonicalName = `${file.name}.${file.ext}`;
+      const signedUrlValid = verifyStorageUrlSignature({
+        projectCode: req.project.code,
+        fileId: String(file._id),
+        filename: canonicalName,
+        size: req.query.size || "",
+        expires: req.query.expires,
+        signature: req.query.signature,
+      });
 
-      // If the project defines a storage rule covering file reads, enforce it on
-      // the download too (per-file access control), so a project isn't limited to
-      // "any logged-in user can read any private file". When no files read-rule is
-      // defined, the valid-project-token check above remains the gate (backward
-      // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
-      const sr = req.project.storageRules || {};
-      const fileRuleDefined =
-        Object.prototype.hasOwnProperty.call(sr, "/files") ||
-        Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
-        (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
-      if (fileRuleDefined) {
-        let user = null;
-        if (decoded.userId) {
-          user = await getDocument({
-            userId: req.project.userId,
-            projectCode: req.project.code,
-            collectionName: authCollectionName,
-            query: { _id: decoded.userId },
-            select: { password: 0, resetPasswordToken: 0 },
+      if (!signedUrlValid) {
+        // Legacy path (still supported): a project/user token in the query.
+        if (!token)
+          return res.status(403).json({ message: "Access Denied!" });
+        const decoded = verifyToken(token);
+        if (!decoded || decoded.expired || decoded.project !== req.project.code)
+          return res.status(403).json({ message: "Invalid or expired token!" });
+
+        // If the project defines a storage rule covering file reads, enforce it on
+        // the download too (per-file access control), so a project isn't limited to
+        // "any logged-in user can read any private file". When no files read-rule is
+        // defined, the valid-project-token check above remains the gate (backward
+        // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
+        const sr = req.project.storageRules || {};
+        const fileRuleDefined =
+          Object.prototype.hasOwnProperty.call(sr, "/files") ||
+          Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
+          (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
+        if (fileRuleDefined) {
+          let user = null;
+          if (decoded.userId) {
+            user = await getDocument({
+              userId: req.project.userId,
+              projectCode: req.project.code,
+              collectionName: authCollectionName,
+              query: { _id: decoded.userId },
+              select: { password: 0, resetPasswordToken: 0 },
+            });
+          }
+          const allowed = await checkStorageRule({
+            storageRules: sr,
+            action: "read",
+            resource: "files",
+            user,
+            doc: file,
           });
+          if (!allowed)
+            return res.status(403).json({ message: "Access denied by storage rules." });
         }
-        const allowed = await checkStorageRule({
-          storageRules: sr,
-          action: "read",
-          resource: "files",
-          user,
-          doc: file,
-        });
-        if (!allowed)
-          return res.status(403).json({ message: "Access denied by storage rules." });
       }
     }
 

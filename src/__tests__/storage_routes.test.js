@@ -34,7 +34,11 @@ const {
   deleteFile,
   searchBucketContent,
 } = require("../core/storage_service");
-const { verifyToken } = require("../utils/encryptions");
+const {
+  verifyToken,
+  signStorageUrl,
+  verifyStorageUrlSignature,
+} = require("../utils/encryptions");
 const { isImg, getResizedImage } = require("../utils/file");
 
 // ─── test app factory ────────────────────────────────────────────────────────
@@ -224,6 +228,55 @@ describe("Storage Routes", () => {
       expect(res.status).toBe(200);
     });
 
+    it("should serve a private file for a VALID signed URL (no token, no admin)", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "photo",
+        ext: "jpg",
+        dir: "data/storage/testproject/abc123",
+        isPublic: false,
+      });
+      verifyStorageUrlSignature.mockReturnValue(true);
+      const res = await request(createApp({ isDbAdmin: false })).get(
+        `/${VALID_FILE_ID}/photo.jpg?expires=9999999999&signature=abcd`
+      );
+      expect(res.status).toBe(200);
+      // A valid signature stands in for the token path entirely.
+      expect(verifyToken).not.toHaveBeenCalled();
+    });
+
+    it("should verify the signature against the DB-canonical name, not the request path", async () => {
+      // Same file, requested under an NFC/NFD variant of the name — the handler
+      // must sign-check `${name}.${ext}` from the DB, so the raw path spelling
+      // cannot change what was signed.
+      getStorageFile.mockResolvedValue({
+        name: "photo",
+        ext: "jpg",
+        dir: "data/storage/testproject/abc123",
+        isPublic: false,
+      });
+      verifyStorageUrlSignature.mockReturnValue(true);
+      await request(createApp({ isDbAdmin: false })).get(
+        `/${VALID_FILE_ID}/photo.jpg?expires=9999999999&signature=abcd`
+      );
+      expect(verifyStorageUrlSignature).toHaveBeenCalledWith(
+        expect.objectContaining({ filename: "photo.jpg", projectCode: "testproject" })
+      );
+    });
+
+    it("should 403 a private file when the signature is INVALID and there is no token", async () => {
+      getStorageFile.mockResolvedValue({
+        name: "photo",
+        ext: "jpg",
+        dir: "data/storage/testproject/abc123",
+        isPublic: false,
+      });
+      verifyStorageUrlSignature.mockReturnValue(false);
+      const res = await request(createApp({ isDbAdmin: false })).get(
+        `/${VALID_FILE_ID}/photo.jpg?expires=1&signature=deadbeef`
+      );
+      expect(res.status).toBe(403);
+    });
+
     it("should call getResizedImage when size param is a valid value", async () => {
       getStorageFile.mockResolvedValue({
         name: "photo",
@@ -299,6 +352,58 @@ describe("Storage Routes", () => {
       );
       expect(res.status).toBe(200);
       expect(res.headers["x-sent-file"]).toMatch(/small\.jpg$/);
+    });
+  });
+
+  // ── GET /files/:fileId/signed-url - mint a signed download URL ─────────────
+
+  describe("GET /files/:fileId/signed-url", () => {
+    it("should 403 a non-admin caller", async () => {
+      getStorageFile.mockResolvedValue({ _id: VALID_FILE_ID, name: "photo", ext: "jpg" });
+      const res = await request(createApp({ isDbAdmin: false })).get(
+        `/files/${VALID_FILE_ID}/signed-url`
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("should 404 when the file does not exist", async () => {
+      getStorageFile.mockResolvedValue(null);
+      const res = await request(createApp({ isDbAdmin: true })).get(
+        `/files/${VALID_FILE_ID}/signed-url`
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("should return a signed URL (signature + expiry) for an admin", async () => {
+      getStorageFile.mockResolvedValue({ _id: VALID_FILE_ID, name: "photo", ext: "jpg" });
+      signStorageUrl.mockReturnValue("sigABC");
+      const res = await request(createApp({ isDbAdmin: true })).get(
+        `/files/${VALID_FILE_ID}/signed-url?size=small`
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.url).toContain(`projects/testproject/storage/${VALID_FILE_ID}/photo.jpg`);
+      expect(res.body.url).toContain("signature=sigABC");
+      expect(res.body.url).toContain("size=small");
+      expect(res.body.url).toContain(`expires=${res.body.expires}`);
+      expect(typeof res.body.expires).toBe("number");
+      // The signature is bound to the DB-canonical name + project + size.
+      expect(signStorageUrl).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectCode: "testproject",
+          filename: "photo.jpg",
+          size: "small",
+        })
+      );
+    });
+
+    it("should ignore an invalid size when minting", async () => {
+      getStorageFile.mockResolvedValue({ _id: VALID_FILE_ID, name: "photo", ext: "jpg" });
+      signStorageUrl.mockReturnValue("sigABC");
+      const res = await request(createApp({ isDbAdmin: true })).get(
+        `/files/${VALID_FILE_ID}/signed-url?size=xxlarge`
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.url).not.toContain("size=");
     });
   });
 

@@ -6,7 +6,7 @@ jest.mock("../utils/logger", () => ({
 }));
 
 const jwt = require("jsonwebtoken");
-const { hashPassword, verifyPassword, getToken, verifyToken, encrypt, decrypt } = require("../utils/encryptions");
+const { hashPassword, verifyPassword, getToken, verifyToken, encrypt, decrypt, signStorageUrl, verifyStorageUrlSignature } = require("../utils/encryptions");
 
 describe("encryptions.js", () => {
   describe("hashPassword", () => {
@@ -111,5 +111,74 @@ describe("encryptions.js", () => {
       const token = jwt.sign({ userId: "x" }, process.env.JWT_SECRET, { expiresIn: "0s" });
       expect(verifyToken(token)).toEqual({ expired: true });
     });
+  });
+});
+
+describe("signed download URLs", () => {
+  const base = {
+    projectCode: "proj",
+    fileId: "507f1f77bcf86cd799439011",
+    filename: "photo.jpg",
+    size: "",
+  };
+  const future = () => Math.floor(Date.now() / 1000) + 3600;
+  const past = () => Math.floor(Date.now() / 1000) - 10;
+
+  it("round-trips a valid, unexpired signature", () => {
+    const expires = future();
+    const signature = signStorageUrl({ ...base, expires });
+    expect(verifyStorageUrlSignature({ ...base, expires, signature })).toBe(true);
+  });
+
+  it("binds the size: a signature for one size does not verify for another", () => {
+    const expires = future();
+    const signature = signStorageUrl({ ...base, size: "small", expires });
+    expect(
+      verifyStorageUrlSignature({ ...base, size: "small", expires, signature })
+    ).toBe(true);
+    expect(
+      verifyStorageUrlSignature({ ...base, size: "large", expires, signature })
+    ).toBe(false);
+  });
+
+  it("rejects an expired signature even when otherwise valid", () => {
+    const expires = past();
+    const signature = signStorageUrl({ ...base, expires });
+    expect(verifyStorageUrlSignature({ ...base, expires, signature })).toBe(false);
+  });
+
+  it("rejects a signature replayed against a different file", () => {
+    const expires = future();
+    const signature = signStorageUrl({ ...base, expires });
+    expect(
+      verifyStorageUrlSignature({
+        ...base,
+        fileId: "507f1f77bcf86cd799439099",
+        expires,
+        signature,
+      })
+    ).toBe(false);
+  });
+
+  it("rejects a signature from a different project", () => {
+    const expires = future();
+    const signature = signStorageUrl({ ...base, expires });
+    expect(
+      verifyStorageUrlSignature({ ...base, projectCode: "other", expires, signature })
+    ).toBe(false);
+  });
+
+  it("rejects a tampered signature", () => {
+    const expires = future();
+    const signature = signStorageUrl({ ...base, expires });
+    const tampered = (signature[0] === "a" ? "b" : "a") + signature.slice(1);
+    expect(verifyStorageUrlSignature({ ...base, expires, signature: tampered })).toBe(false);
+  });
+
+  it("returns false (never throws) on missing or malformed input", () => {
+    const expires = future();
+    expect(verifyStorageUrlSignature({ ...base, expires, signature: undefined })).toBe(false);
+    expect(verifyStorageUrlSignature({ ...base, expires: undefined, signature: "ab" })).toBe(false);
+    expect(verifyStorageUrlSignature({ ...base, expires, signature: "not-hex-zz" })).toBe(false);
   });
 });

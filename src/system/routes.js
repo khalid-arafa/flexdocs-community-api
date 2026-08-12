@@ -16,8 +16,13 @@ const {
   authCollectionName,
   systemProjectCollectionName,
   uploadsPath,
+  authCookieNames,
 } = require("../constants");
 const { hashPassword, verifyPassword } = require("../utils/encryptions");
+const {
+  authCookieOptions,
+  clearedAuthCookieOptions,
+} = require("../utils/cookies");
 const { authLimiter } = require("../middleware/rate_limit.middleware");
 const { zodValidate } = require("../middleware/zod_validate.middleware");
 const {
@@ -40,11 +45,38 @@ router.post("/login", authLimiter, zodValidate(systemLoginSchema), async (req, r
       projectCode: systemProjectCode,
       ...req.body,
     });
-    return res.status(200).json(user);
+    // Establish the session as httpOnly cookies so the browser holds the JWT
+    // somewhere JavaScript — and therefore any XSS on the dashboard — cannot
+    // read it. Set under BOTH names the middlewares read: `flexdocs-auth-token`
+    // gates the system routes (/me, /admin, /settings, /my/projects) and
+    // `db-auth-token` is what checkSystemApiAuth recognises on the project
+    // routes, so an admin keeps their elevated access while browsing project
+    // data (and file downloads carry it, bypassing the ?token= requirement).
+    if (user && user.token) {
+      res.cookie(authCookieNames.system, user.token, authCookieOptions());
+      res.cookie(authCookieNames.dbUser, user.token, authCookieOptions());
+    }
+    // The token still rides the JSON body: in local dev over plain HTTP the
+    // cross-site cookie cannot be set (SameSite=None needs Secure), so the
+    // dashboard falls back to the Authorization: Bearer path there. `csrfToken`
+    // lets the cross-origin dashboard — which cannot read this API's CSRF
+    // cookie — echo the double-submit value on unsafe requests (csrf.middleware).
+    return res.status(200).json({ ...user, csrfToken: res.locals.csrfToken });
   } catch (error) {
     Logger.error(error.message, { stack: error.stack });
     return res.status(400).json({ message: error.message });
   }
+});
+
+// Server-side session teardown: the session cookies are httpOnly, so only the
+// server can clear them. clearCookie must use the SAME options the cookies were
+// set with (path + sameSite + secure) or the browser keeps them. Deliberately
+// unauthenticated and idempotent — logging out must succeed even with an
+// already-expired or missing session, and it reveals nothing.
+router.post("/logout", (req, res) => {
+  res.clearCookie(authCookieNames.system, clearedAuthCookieOptions());
+  res.clearCookie(authCookieNames.dbUser, clearedAuthCookieOptions());
+  return res.status(200).json({ success: true });
 });
 
 router.get("/me", systemApiAuth, async (req, res) => {
