@@ -96,14 +96,35 @@ async function getStorageFile(projectCode, fileId) {
 //
 //
 
+// Resolves a bucket by name, creating it on first use.
+//
+// The lookup is retried exactly ONCE after the create attempt, and that single
+// re-read is what makes the concurrent case correct: two requests uploading to
+// the same new bucket both miss and both try to create. The loser's insert
+// fails — since createDocument propagates errors, that surfaces as a rejection
+// (duplicate key) rather than a null return — so the create failure alone must
+// NOT be fatal here. Re-reading resolves the loser to the bucket the winner
+// actually created, rather than erroring on a bucket that now exists.
+//
+// A create failure with nothing to re-read means creation is genuinely broken,
+// not raced, so retrying further cannot help — the previous version recursed
+// unconditionally, which turned a persistently failing insert into infinite
+// recursion that blew the stack and hung the request. Fail loudly instead, and
+// surface the original insert error, which says why it actually failed.
 async function getBucketByName({ userId, projectCode, bucketName, parentId }) {
-  let bucket = await getDocument({
-    userId,
-    projectCode,
-    collectionName: bucketsCollectionName,
-    query: { name: bucketName },
-  });
-  if (!bucket) {
+  const findBucket = () =>
+    getDocument({
+      userId,
+      projectCode,
+      collectionName: bucketsCollectionName,
+      query: { name: bucketName },
+    });
+
+  const existing = await findBucket();
+  if (existing) return existing;
+
+  let createError = null;
+  try {
     await createDocument({
       userId,
       projectCode,
@@ -116,9 +137,15 @@ async function getBucketByName({ userId, projectCode, bucketName, parentId }) {
         type: "bucket",
       },
     });
-    return await getBucketByName({ userId, projectCode, bucketName, parentId });
+  } catch (error) {
+    createError = error;
   }
-  return bucket;
+
+  const bucket = await findBucket();
+  if (bucket) return bucket;
+
+  if (createError) throw createError;
+  throw new Error(`Failed to create or resolve the bucket "${bucketName}"`);
 }
 
 async function createStorageBucket({ userId, projectCode, data }) {
@@ -248,16 +275,6 @@ async function getBucketContent({
     query: { parentId: bucketId },
   });
 
-  // console.log({
-  //   params: {
-  //     userId,
-  //     projectCode,
-  //     bucketId,
-  //     limit,
-  //     skip,
-  //   },
-  // });
-
   let buckets = [];
   let files = [];
 
@@ -307,11 +324,6 @@ async function getBucketContent({
     collectionName: filesCollectionName,
     query: { bucketId },
   });
-
-  // console.log({
-  //   buckets: buckets.map((i) => i.name),
-  //   files: files.map((i) => i.name),
-  // });
 
   return {
     totalCount: bucketsCount + filesCount,

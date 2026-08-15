@@ -120,34 +120,54 @@ async function socketAuth(socket, next) {
       if (expired)
         return next(new Error("Authentication error: Invalid project token"));
 
-      // An UNEXPIRED one is a different matter, and enforcing here caused a
-      // production outage worth recording. REST revokes instantly (it hashes
-      // on every request) while sockets historically did not, so tightening
-      // this looked like closing an inconsistency — but a live site was
-      // running on a token that is not in its project's credential list, and
-      // it had been working for as long as the token stayed unexpired.
-      // Rejecting it took file uploads down with no error the client could
-      // see: socket.io buffers the emit and the upload hangs at "preparing"
-      // forever.
+      // An UNEXPIRED one is ALLOWED unless an operator explicitly opts in to
+      // enforcement, and the history is why. REST revokes instantly (it hashes
+      // the token on every request) while sockets historically did not, so a
+      // socket accepting a credential REST would refuse is a genuine hole —
+      // but closing it by default caused a production outage: a live site was
+      // running on a token that is NOT in its project's credential list and
+      // had been fine for as long as the token stayed unexpired. Rejecting it
+      // took file uploads down with nothing the client could see, because
+      // socket.io buffers the emit and a failed handshake surfaces nowhere
+      // near the upload — it just sits at "preparing" forever.
       //
-      // So warn loudly and allow, unless an operator opts in. The warning is
-      // the point — it names the project and the hash actually presented, so
-      // the mismatch can be found and fixed BEFORE enforcement is switched on,
-      // rather than discovered as an outage afterwards.
+      // So the default stays permissive and the warning is the product: it
+      // names the project AND the hash actually presented, so the mismatch can
+      // be matched against the stored hashes and fixed BEFORE enforcement is
+      // switched on — rather than discovered as an outage afterwards.
+      //
+      // Enforcement requires ENFORCE_SOCKET_PROJECT_CREDENTIAL=true exactly.
+      // Anything else — unset, empty, "false", a typo — allows, because the
+      // failure mode of guessing wrong here is a silent outage.
+      const meta = {
+        project: decodedProjectToken.code,
+        presentedHash: hashProjectToken(projectToken),
+        storedHashes: (project.credentials || [])
+          .map((c) => c?.creds?.projectTokenHash)
+          .filter(Boolean),
+      };
+
+      if (process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL === "true") {
+        // The diagnosis operators need when uploads/realtime go quiet: which
+        // project, which hash was presented, which hashes the project stores.
+        Logger.warn(
+          "Socket rejected: project token is not a registered credential of " +
+            "this project, and ENFORCE_SOCKET_PROJECT_CREDENTIAL=true. " +
+            "Register or rotate the token in the dashboard (or unset the flag " +
+            "— note that sockets fail silently, e.g. uploads hang at 0%).",
+          meta,
+        );
+        return next(new Error("Authentication error: Invalid project token"));
+      }
+
+      // Default: allow, and keep the warning loud. Running this way is meant to
+      // be temporary — the whole point of the log is that the mismatch gets
+      // fixed, then enforcement turned on.
       Logger.warn(
         "Socket project token is not a registered credential — allowed. " +
           "Set ENFORCE_SOCKET_PROJECT_CREDENTIAL=true to reject instead.",
-        {
-          project: decodedProjectToken.code,
-          presentedHash: hashProjectToken(projectToken),
-          storedHashes: (project.credentials || [])
-            .map((c) => c?.creds?.projectTokenHash)
-            .filter(Boolean),
-        },
+        meta,
       );
-
-      if (process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL === "true")
-        return next(new Error("Authentication error: Invalid project token"));
     }
 
     socket.project = project;

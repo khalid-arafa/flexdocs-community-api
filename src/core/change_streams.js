@@ -30,6 +30,7 @@
 
 const { DatabaseClient } = require("./client");
 const { getDocument } = require("./db_service");
+const { ProjectDocCache } = require("./project_doc_cache");
 const Logger = require("../utils/logger");
 const {
   systemDatabaseName,
@@ -63,10 +64,22 @@ let resumeToken = null;
 let reconnectDelay = RECONNECT_BASE_MS;
 let reconnectTimer = null;
 
-// projectCode → { doc, expiresAt }. The driver runs outside the request cycle
-// so it cannot use projectApiAuth's cache. The TTL is what makes an admin
-// toggling realtimeChangeStreams take effect without a restart.
-const projectCache = new Map();
+// The driver runs outside the request cycle, so it cannot share projectApiAuth's
+// cache INSTANCE — but it wants the same behavior, hence the same
+// implementation (core/project_doc_cache.js). The TTL is what makes an admin
+// toggling realtimeChangeStreams take effect without a restart; the explicit
+// invalidateProject() call from the request-side write sites is what usually
+// gets there first.
+//
+// Misses are cached here (and only here): a change stream sees every database
+// on the cluster, including any that is not a FlexDocs project, and without
+// that every write to one would re-query the projects collection. The entry
+// bound matters for the same reason — the key space is "every database name
+// this cluster ever emits an event for", not "every project".
+const projectCache = new ProjectDocCache({
+  ttlMs: PROJECT_CACHE_TTL_MS,
+  cacheMisses: true,
+});
 
 /**
  * Does this deployment support change streams?
@@ -90,28 +103,19 @@ async function detectChangeStreamSupport() {
 }
 
 async function getProject(projectCode) {
-  const cached = projectCache.get(projectCode);
-  if (cached && cached.expiresAt > Date.now()) return cached.doc;
-
-  const doc = await getDocument({
-    userId: systemDatabaseName,
-    projectCode: systemProjectCode,
-    collectionName: systemProjectCollectionName,
-    query: { code: projectCode },
-  });
-  // Misses are cached too, as null: a change stream sees every database on the
-  // cluster, including any that is not a FlexDocs project, and without this
-  // every write to one would re-query the projects collection.
-  projectCache.set(projectCode, {
-    doc: doc || null,
-    expiresAt: Date.now() + PROJECT_CACHE_TTL_MS,
-  });
-  return doc || null;
+  return projectCache.getOrFetch(projectCode, () =>
+    getDocument({
+      userId: systemDatabaseName,
+      projectCode: systemProjectCode,
+      collectionName: systemProjectCollectionName,
+      query: { code: projectCode },
+    }),
+  );
 }
 
 /** Drops a cached project so the next event re-reads its flags. */
 function invalidateProject(projectCode) {
-  projectCache.delete(projectCode);
+  projectCache.invalidate(projectCode);
 }
 
 /**

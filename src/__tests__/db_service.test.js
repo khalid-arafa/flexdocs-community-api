@@ -132,13 +132,18 @@ describe("db_service.js", () => {
       expect(result).toBeNull();
     });
 
-    // createDocument — error swallowed, returns null
-    it("createDocument with $where in document data should return null (not store)", async () => {
-      const result = await createDocument({
-        ...BASE,
-        data: { $where: "1==1", name: "test" },
-      });
-      expect(result).toBeNull();
+    // createDocument — throws (the internal try/catch that swallowed this and
+    // returned null is gone: a caller that is told `null` cannot tell a
+    // refused write from a stored one, so /add answered 200 {_id: null} and
+    // emitted a realtime "add" for a document that never existed).
+    it("createDocument with $where in document data should throw (and not store)", async () => {
+      const { db, collection } = makeMockDb();
+      getUserDB.mockResolvedValue(db);
+
+      await expect(
+        createDocument({ ...BASE, data: { $where: "1==1", name: "test" } }),
+      ).rejects.toThrow("Forbidden operator: $where");
+      expect(collection.insertOne).not.toHaveBeenCalled();
     });
 
     // updateDocument — throws (no internal try-catch)

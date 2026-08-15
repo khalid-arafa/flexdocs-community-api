@@ -11,6 +11,21 @@ const Logger = require("../utils/logger");
 
 const files_room = {};
 
+// Storage rules are default-DENY (core/db_rules_service `_evaluateRule`): a
+// path with no rule defined is rejected, so a project that has authored no
+// storage rules at all denies every non-admin upload. That is the intended
+// posture — it matches DB rules and Firebase/Supabase, and it is what the REST
+// download path enforces too — but a bare "denied" reads as a bug and sends
+// operators hunting through rules that do not exist. Report the missing-config
+// case in its own words instead.
+function hasStorageRules(storageRules) {
+  return Boolean(storageRules) && Object.keys(storageRules).length > 0;
+}
+
+const NO_STORAGE_RULES_UPLOAD_MESSAGE =
+  "Upload denied: no storage rules are defined for this project. " +
+  'Define a "/files" storage rule (for example {"/files": {"add": true}}) to allow uploads.';
+
 /** Removes a partial upload's file and its directory, ignoring what is absent. */
 async function discardUpload(upload) {
   try {
@@ -97,7 +112,9 @@ function storageSockets(io) {
 
         // Authorize the upload against the project's storage rules (action "add").
         // Closes the gap where any socket holding the project token could write
-        // files. With no rules defined this allows uploads (backward compatible).
+        // files. The check is default-DENY: a project with no "/files" add-rule
+        // denies non-admin uploads (see hasStorageRules above), matching the
+        // REST download path rather than quietly allowing everything.
         // Admin bypass mirrors storageGuard's `req.isDbAdmin || req.byAdmin` on
         // the REST side — without it the dashboard's own uploads could be
         // denied by rules written for ordinary end users.
@@ -111,9 +128,17 @@ function storageSockets(io) {
             body: fileInfo,
           }));
         if (!allowed) {
+          const unconfigured = !hasStorageRules(socket.project.storageRules);
+          if (unconfigured)
+            Logger.warn(
+              "[storage] upload denied: no storage rules are defined for the project",
+              { projectCode: socket.project.code, file: fileInfo.name },
+            );
           return socket.emit("upload:error", {
             name: fileInfo.name,
-            message: "Upload denied by storage rules",
+            message: unconfigured
+              ? NO_STORAGE_RULES_UPLOAD_MESSAGE
+              : "Upload denied by storage rules",
           });
         }
 
@@ -378,6 +403,8 @@ module.exports = {
     files_room,
     uploadName,
     discardUpload,
+    hasStorageRules,
+    NO_STORAGE_RULES_UPLOAD_MESSAGE,
     getStorageRoomName,
     getStorageSocketsByRoom,
     addSocketToStorageRoom,

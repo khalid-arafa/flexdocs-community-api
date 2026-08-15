@@ -30,7 +30,7 @@ const { authLimiter, anonLoginLimiter } = require("../middleware/rate_limit.midd
 const { zodValidate } = require("../middleware/zod_validate.middleware.js");
 const { stripProtectedAuthFields } = require("../utils/auth_field_guard.js");
 const { authTokenExpiryFor } = require("../utils/token_expiry.js");
-const Logger = require("../utils/logger");
+const { AppError } = require("../utils/app_error.js");
 const {
   dbRegisterSchema,
   dbLoginSchema,
@@ -285,7 +285,13 @@ const adminAuth = (req, res, next) => {
 };
 router.use(adminAuth);
 
-router.post("/accounts", zodValidate(adminListAccountsSchema), async (req, res) => {
+// The account routes below hand unexpected failures to the central error
+// handler rather than echoing error.message at 500: these queries run against
+// the auth collection, so a Mongo error string can name accounts, indexes and
+// connection details. The 4xx paths above keep returning their own messages —
+// those are deliberate answers to the caller ("Old password is incorrect!"),
+// not internal detail, and the handler leaves non-500 messages intact.
+router.post("/accounts", zodValidate(adminListAccountsSchema), async (req, res, next) => {
   let { query, sort, select, limit, page } = req.body;
   if (!page) page = 1;
   if (!limit) limit = 100;
@@ -319,12 +325,11 @@ router.post("/accounts", zodValidate(adminListAccountsSchema), async (req, res) 
       ipp: limit,
     });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.post("/accounts/add", zodValidate(adminAddAccountSchema), async (req, res) => {
+router.post("/accounts/add", zodValidate(adminAddAccountSchema), async (req, res, next) => {
   try {
     const user = await registerWithEmailAndPassword({
       userId: req.project.userId,
@@ -344,12 +349,11 @@ router.post("/accounts/add", zodValidate(adminAddAccountSchema), async (req, res
     });
     return res.status(200).json(user);
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.post("/accounts/send-verification-email", async (req, res) => {
+router.post("/accounts/send-verification-email", async (req, res, next) => {
   if (!isValidObjectId(req.body.userId))
     return res.status(400).json({ message: "userId is not valid" });
   try {
@@ -362,8 +366,11 @@ router.post("/accounts/send-verification-email", async (req, res) => {
       select: { email: 1 },
     });
 
-    if (!account) throw new Error("Account couldn't be found!");
-    if (!isValidEmail(account.email)) throw new Error("Email is invalid");
+    // AppError, not a bare Error: these three are answers to the caller, and
+    // the central handler only preserves the message on non-500 statuses. They
+    // also used to be reported as 500s, which they never were.
+    if (!account) throw new AppError("Account couldn't be found!", 404);
+    if (!isValidEmail(account.email)) throw new AppError("Email is invalid", 400);
 
     const success = await sendVerifyEmail({
       project: req.project,
@@ -371,19 +378,19 @@ router.post("/accounts/send-verification-email", async (req, res) => {
       baseUrl: `${getPublicBaseUrl(req)}/verify?token=`,
     });
     if (!success)
-      throw new Error(
+      throw new AppError(
         "A problem has happened while sending the verification email!",
+        400,
       );
     return res
       .status(200)
       .json({ message: "A verification link was sent to your email!" });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.put("/accounts/:id", async (req, res) => {
+router.put("/accounts/:id", async (req, res, next) => {
   if (!isValidObjectId(req.params.id))
     return res.status(400).json({ message: "id is not valid" });
   try {
@@ -412,12 +419,11 @@ router.put("/accounts/:id", async (req, res) => {
     });
     return res.status(200).json({ success: result.matchedCount });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.delete("/accounts/:id", async (req, res) => {
+router.delete("/accounts/:id", async (req, res, next) => {
   if (!isValidObjectId(req.params.id))
     return res.status(400).json({ message: "id is not valid" });
   try {
@@ -435,8 +441,7 @@ router.delete("/accounts/:id", async (req, res) => {
     });
     return res.status(200).json({ success: result.deletedCount });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 

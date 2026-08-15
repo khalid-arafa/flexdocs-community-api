@@ -74,9 +74,44 @@ module.exports.documentMiddleware = async (req, res, next) => {
   return middleware(req, res, next);
 };
 
+// Pin the pending bulk write to the exact documents that just passed the rule
+// check, closing the check→write race.
+//
+// The rule check below reads documents, but the write in db.routes.js re-reads
+// `req.body.filter` and hands THAT to updateMany/deleteMany. Anything inserted
+// (or edited into the filter's range) between the two is written without ever
+// having been rule-checked — a caller who can predict or trigger an insert gets
+// a free write on a document rules would have refused. Rewriting the filter in
+// place closes the window with no change required in the route: it keeps
+// reading `req.body.filter`, which now describes the authorized set.
+//
+// The original filter is ANDed rather than replaced, so a document that stopped
+// matching it after the check (its status changed, say) is still excluded — the
+// narrowed filter is always a subset of what the caller asked for, never a
+// superset. Counts are therefore unchanged on a quiescent collection, and under
+// concurrency the only documents dropped are ones the caller was never
+// authorized for. The id list is bounded by BULK_RULE_CHECK_LIMIT, which the
+// caller has already been held to.
+function restrictWriteToAuthorizedIds(req, filter, ids) {
+  // Exposed for anything downstream that would rather have the list than parse
+  // the filter (nothing needs it today; the rewrite above is self-contained).
+  req.authorizedBulkIds = ids;
+
+  // DELETE /:col with no filter at all never reaches a write for a non-admin —
+  // the route answers "filter is required!" with a 400. Writing a filter in
+  // here would turn that refusal into a real delete, so leave the body alone.
+  if (!req.body || !req.body.filter) return;
+
+  const idClause = { _id: { $in: ids } };
+  req.body.filter =
+    Object.keys(filter).length > 0 ? { $and: [filter, idClause] } : idClause;
+}
+
 // Bulk update (PUT /:col) and bulk delete (DELETE /:col).
 // Evaluates DB rules against EVERY matched document so document-level rules
-// (e.g. "user.uid == doc.ownerId") are enforced on collection-wide operations.
+// (e.g. "user.uid == doc.ownerId") are enforced on collection-wide operations,
+// then narrows the write to exactly those documents (see
+// restrictWriteToAuthorizedIds above).
 // Previously these routes used a separate validator that only saw the request
 // body, so per-document rules were silently skipped for bulk ops.
 module.exports.bulkMiddleware = async (req, res, next) => {
@@ -95,8 +130,14 @@ module.exports.bulkMiddleware = async (req, res, next) => {
       query: filter,
     });
 
-    // Nothing matches — the operation is a no-op, so there is nothing to guard.
-    if (matched === 0) return next();
+    // Nothing matches *right now* — but "it's a no-op" is exactly the
+    // assumption the race exploits, so pin the write to the empty set instead
+    // of letting the original filter reach Mongo. The response is unchanged:
+    // matchedCount/deletedCount 0 produces the same 404 as before.
+    if (matched === 0) {
+      restrictWriteToAuthorizedIds(req, filter, []);
+      return next();
+    }
 
     if (matched > BULK_RULE_CHECK_LIMIT) {
       return res.status(400).json({
@@ -127,6 +168,13 @@ module.exports.bulkMiddleware = async (req, res, next) => {
         });
       }
     }
+
+    // Every doc in `docs` passed, so the authorized set is exactly their ids.
+    restrictWriteToAuthorizedIds(
+      req,
+      filter,
+      docs.map((doc) => doc._id),
+    );
 
     next();
   } catch (error) {

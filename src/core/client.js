@@ -15,6 +15,12 @@ const clientOptions = {
 const DatabaseClient = new MongoClient(process.env.MONGODB_URI, clientOptions);
 
 // Connect once at startup and reuse (cached promise prevents concurrent connect races)
+//
+// This is the ONLY place the driver's connect() is called. index.js used to
+// call DatabaseClient.connect() directly at boot, which worked purely because
+// the driver's connect is idempotent — but it meant two independent paths to
+// the same state, only one of which logged, and only one of which reset itself
+// so a later caller could retry.
 let connectPromise = null;
 async function connectToMongo() {
   if (!connectPromise) {
@@ -27,6 +33,58 @@ async function connectToMongo() {
       });
   }
   return connectPromise;
+}
+
+// Boot-time retry budget. Mongo and the API are routinely started together
+// (docker compose, a host reboot), so "connection refused" at t=0 is normal
+// and temporary; "still refused a minute later" is not. Retrying beyond the
+// budget is pointless — the supervisor restarting the container is the better
+// recovery, and it also re-reads configuration a stuck process never would.
+const BOOT_CONNECT_BUDGET_MS = Number(process.env.BOOT_DB_TIMEOUT_MS) || 60000;
+const BOOT_CONNECT_BASE_DELAY_MS = 1000;
+const BOOT_CONNECT_MAX_DELAY_MS = 10000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Connect at startup, retrying with backoff until the budget is spent.
+ *
+ * The retry lives HERE and not inside connectToMongo() on purpose: request-path
+ * callers (getUserDB) must fail fast on a dead Mongo rather than each hold a
+ * request open for the whole boot budget. connectToMongo() keeps its single
+ * job — connect once, cache the result, clear the cache on failure so the next
+ * call genuinely retries — and this loop is simply a caller that makes use of
+ * that. Each attempt already carries the driver's serverSelectionTimeoutMS
+ * (10s), so the delays below are the pause BETWEEN attempts, not the pace of
+ * them; the budget is checked after an attempt fails, so at least one full
+ * attempt always happens however small the budget.
+ *
+ * Rejects with the last error once the budget is exhausted. The caller decides
+ * what that means — index.js treats it as fatal.
+ */
+async function connectWithRetry({
+  budgetMs = BOOT_CONNECT_BUDGET_MS,
+  baseDelayMs = BOOT_CONNECT_BASE_DELAY_MS,
+  maxDelayMs = BOOT_CONNECT_MAX_DELAY_MS,
+} = {}) {
+  const deadline = Date.now() + budgetMs;
+  let delay = baseDelayMs;
+  let attempt = 0;
+
+  for (;;) {
+    attempt += 1;
+    try {
+      return await connectToMongo();
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      Logger.warn(
+        `MongoDB not reachable (attempt ${attempt}); retrying in ${delay}ms`,
+        { error: error.message },
+      );
+      await sleep(delay);
+      delay = Math.min(delay * 2, maxDelayMs);
+    }
+  }
 }
 
 async function getUserDB(userId, projectCode) {
@@ -87,4 +145,6 @@ module.exports = {
   DatabaseClient,
   getUserDB,
   ensureCriticalIndexes,
+  connectToMongo,
+  connectWithRetry,
 };

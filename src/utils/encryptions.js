@@ -1,246 +1,34 @@
-const crypto = require("crypto");
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
-const Logger = require("./logger");
-const { tokenExpiry } = require("../constants");
+// Re-export barrel. The implementation lives in ./crypto/*, split by concern:
+//
+//   crypto/jwt.js          — sign/verify session & project tokens
+//   crypto/password.js     — bcrypt hashing and verification
+//   crypto/legacy_aes.js   — AES-256-CBC, read-only backward compat
+//   crypto/secrets.js      — AES-256-GCM at-rest encryption for stored secrets
+//   crypto/storage_urls.js — HMAC signatures for time-limited download links
+//
+// This module stays the single public entry point so the ~15 call sites across
+// routes, middleware, sockets and services (and the tests that jest.mock this
+// path) need no change. New code may import the focused module directly, but
+// keep exporting everything from here.
 require("dotenv").config();
 
-const BCRYPT_ROUNDS = 12;
-
-// detect if a stored hash is bcrypt (starts with $2a$ or $2b$)
-function isBcryptHash(hash) {
-  return hash && (hash.startsWith("$2a$") || hash.startsWith("$2b$"));
-}
-
-// hash password with bcrypt
-async function hashPassword(plaintext) {
-  return bcrypt.hash(plaintext, BCRYPT_ROUNDS);
-}
-
-// Burn one bcrypt comparison against a throwaway hash.
-//
-// Login answers "Invalid email or password" for both an unknown address and a
-// wrong password, but it only PAYS for bcrypt in the second case — an unknown
-// address returns in a few milliseconds while a real one costs ~250ms at 12
-// rounds. That difference is measurable over the network and re-opens the
-// account enumeration the shared message exists to close. Callers await this on
-// the user-not-found path so both answers cost the same.
-//
-// The hash is generated once, lazily, at whatever BCRYPT_ROUNDS is configured,
-// so the decoy tracks the real cost automatically if the rounds ever change.
-let dummyHashPromise = null;
-async function burnPasswordComparison(plaintext) {
-  if (!dummyHashPromise)
-    dummyHashPromise = bcrypt.hash("password-that-matches-nothing", BCRYPT_ROUNDS);
-  try {
-    await bcrypt.compare(String(plaintext ?? ""), await dummyHashPromise);
-  } catch {
-    // A decoy comparison must never change the outcome of the caller.
-  }
-}
-
-// verify password against stored hash (supports both bcrypt and legacy AES)
-// returns { match: boolean, needsRehash: boolean }
-async function verifyPassword(plaintext, storedHash) {
-  if (isBcryptHash(storedHash)) {
-    const match = await bcrypt.compare(plaintext, storedHash);
-    return { match, needsRehash: false };
-  }
-  // legacy AES-256-CBC format: try decrypt and compare
-  try {
-    const decrypted = decryptLegacy(storedHash);
-    const decBuf = Buffer.from(decrypted, "utf8");
-    const plainBuf = Buffer.from(plaintext, "utf8");
-    const match = decBuf.length === plainBuf.length &&
-      crypto.timingSafeEqual(decBuf, plainBuf);
-    return { match, needsRehash: match }; // if matched, flag for rehash
-  } catch {
-    return { match: false, needsRehash: false };
-  }
-}
-
-// legacy AES encrypt (kept only for backward-compat reads during migration)
-function encryptLegacy(text) {
-  let key = crypto
-    .createHash("sha256")
-    .update(String(process.env.ENCRYPTION_KEY))
-    .digest("base64")
-    .substr(0, 32);
-
-  let iv = crypto.randomBytes(16);
-  let cipher = crypto.createCipheriv("aes-256-cbc", Buffer.from(key), iv);
-  let encrypted = cipher.update(text);
-
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString("hex") + ":" + encrypted.toString("hex");
-}
-
-// legacy AES decrypt
-function decryptLegacy(text) {
-  let key = crypto
-    .createHash("sha256")
-    .update(String(process.env.ENCRYPTION_KEY))
-    .digest("base64")
-    .substr(0, 32);
-  let textParts = text.split(":");
-  let iv = Buffer.from(textParts.shift(), "hex");
-  let encryptedText = Buffer.from(textParts.join(":"), "hex");
-  let decipher = crypto.createDecipheriv("aes-256-cbc", Buffer.from(key), iv);
-  let decrypted = decipher.update(encryptedText);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString();
-}
-
-// JWTs are symmetric (HMAC) — pin the algorithm on both sign and verify so a
-// token can never be coerced into "alg":"none" or an asymmetric confusion.
-const JWT_ALGORITHM = "HS256";
-
-// ── Authenticated at-rest encryption for stored secrets (SMTP pass / API keys) ──
-// AES-256-GCM with the FULL 32-byte key derived from ENCRYPTION_KEY. Unlike the
-// legacy CBC routine this provides integrity (auth tag), so tampered ciphertext
-// is rejected on decrypt. Output format: "gcm:<ivHex>:<tagHex>:<cipherHex>".
-const ENC_GCM_PREFIX = "gcm:";
-
-function secretKey() {
-  return crypto.createHash("sha256").update(String(process.env.ENCRYPTION_KEY)).digest();
-}
-
-function encryptSecret(plaintext) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", secretKey(), iv);
-  const ct = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${ENC_GCM_PREFIX}${iv.toString("hex")}:${tag.toString("hex")}:${ct.toString("hex")}`;
-}
-
-function decryptSecret(value) {
-  if (typeof value === "string" && value.startsWith(ENC_GCM_PREFIX)) {
-    const [ivHex, tagHex, ctHex] = value.slice(ENC_GCM_PREFIX.length).split(":");
-    const decipher = crypto.createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivHex, "hex"));
-    decipher.setAuthTag(Buffer.from(tagHex, "hex"));
-    const pt = Buffer.concat([decipher.update(Buffer.from(ctHex, "hex")), decipher.final()]);
-    return pt.toString("utf8");
-  }
-  // Backward-compat: read legacy AES-256-CBC values written before this change.
-  return decryptLegacy(value);
-}
-
-// generate a token
-function getToken(obj, { expiresIn = tokenExpiry.auth } = {}) {
-  try {
-    const token = jwt.sign(obj, process.env.JWT_SECRET, {
-      expiresIn,
-      algorithm: JWT_ALGORITHM,
-    });
-    return token;
-  } catch (error) {
-    Logger.log(error.message, __filename);
-    return null;
-  }
-}
-
-// verify a token
-function verifyToken(token) {
-  try {
-    const obj = jwt.verify(token, process.env.JWT_SECRET, {
-      algorithms: [JWT_ALGORITHM],
-    });
-    return obj;
-  } catch (error) {
-    Logger.log(error.message, __filename);
-    if (error.name === "TokenExpiredError") {
-      return { expired: true };
-    }
-    return null;
-  }
-}
-
-// Read the claims out of a token whose only defect is that it has expired.
-//
-// Signature and algorithm are still enforced — `ignoreExpiration` relaxes
-// exactly one check and nothing else, so a forged or tampered token is still
-// rejected (returns null). Callers must have some other means of deciding the
-// credential is still live; today that is socketAuth matching the project
-// token against the project's stored `projectTokenHash`, mirroring how REST
-// authenticates the same credential. Do not use this to wave through user
-// session tokens: their expiry is the only thing bounding a stolen session.
-function decodeExpiredToken(token) {
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET, {
-      algorithms: [JWT_ALGORITHM],
-      ignoreExpiration: true,
-    });
-  } catch (error) {
-    Logger.log(error.message, __filename);
-    return null;
-  }
-}
-
-// ── Signed download URLs ────────────────────────────────────────────────────
-//
-// A signed URL is a server-minted, time-limited, single-file grant. It lets the
-// dashboard produce a shareable/openable link to a PRIVATE file without putting
-// a reusable bearer token (the project or user JWT) in the URL — where it would
-// leak into browser history, the Referer header and access logs.
-//
-// The signature binds project + file id + filename (+ requested size) + expiry,
-// so it authorises exactly one file and cannot be replayed against another or
-// past its deadline. It is HMAC-SHA256 over JWT_SECRET, domain-separated from
-// real JWTs by a fixed context label so a storage signature can never be
-// mistaken for — or forged from — a token.
-const STORAGE_URL_CONTEXT = "flexdocs-storage-url-v1";
-
-function storageUrlPayload({ projectCode, fileId, filename, size, expires }) {
-  return [
-    STORAGE_URL_CONTEXT,
-    projectCode,
-    fileId,
-    filename,
-    size || "",
-    String(expires),
-  ].join("\n");
-}
-
-function signStorageUrl({ projectCode, fileId, filename, size = "", expires }) {
-  return crypto
-    .createHmac("sha256", process.env.JWT_SECRET)
-    .update(storageUrlPayload({ projectCode, fileId, filename, size, expires }))
-    .digest("hex");
-}
-
-// Constant-time verification, expiry included. Returns a plain boolean and
-// never throws on malformed input (bad hex, missing fields) — a forged link is
-// simply invalid.
-function verifyStorageUrlSignature({
-  projectCode,
-  fileId,
-  filename,
-  size = "",
-  expires,
-  signature,
-}) {
-  if (!signature || !expires) return false;
-  const exp = Number(expires);
-  if (!Number.isFinite(exp) || exp * 1000 <= Date.now()) return false;
-  const expected = signStorageUrl({
-    projectCode,
-    fileId,
-    filename,
-    size,
-    expires: exp,
-  });
-  const expectedBuf = Buffer.from(expected, "hex");
-  let providedBuf;
-  try {
-    providedBuf = Buffer.from(String(signature), "hex");
-  } catch {
-    return false;
-  }
-  return (
-    expectedBuf.length === providedBuf.length &&
-    crypto.timingSafeEqual(expectedBuf, providedBuf)
-  );
-}
+const {
+  JWT_ALGORITHM,
+  getToken,
+  verifyToken,
+  decodeExpiredToken,
+} = require("./crypto/jwt");
+const {
+  hashPassword,
+  verifyPassword,
+  burnPasswordComparison,
+} = require("./crypto/password");
+const { encryptLegacy, decryptLegacy } = require("./crypto/legacy_aes");
+const { encryptSecret, decryptSecret } = require("./crypto/secrets");
+const {
+  signStorageUrl,
+  verifyStorageUrlSignature,
+} = require("./crypto/storage_urls");
 
 module.exports = {
   hashPassword,

@@ -176,7 +176,7 @@ router.put("/me", systemApiAuth, zodValidate(systemProfileUpdateSchema), async (
 });
 
 //
-router.delete("/me", systemApiAuth, async (req, res) => {
+router.delete("/me", systemApiAuth, async (req, res, next) => {
   try {
     await getDocument({
       userId: systemDatabaseName,
@@ -217,8 +217,7 @@ router.delete("/me", systemApiAuth, async (req, res) => {
     }
     return res.status(200).json({ success: true });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 

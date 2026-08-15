@@ -1,5 +1,6 @@
 const { ObjectId } = require("mongodb");
 const Logger = require("../utils/logger");
+const { AppError } = require("../utils/app_error");
 const { getUserDB } = require("./client");
 const ensureIndexes = require("./ensure_indexes");
 const { reservedCollectionNames, authCollectionName } = require("../constants");
@@ -95,8 +96,12 @@ function formatQueryObj(query) {
     }
     const result = {};
     for (const [key, value] of Object.entries(obj)) {
+      // AppError(400) rather than a bare Error: this is a caller mistake, not a
+      // server fault, and the central error handler only masks 500-class
+      // messages — so the operator name survives to the client instead of being
+      // flattened into "Internal server error".
       if (BLOCKED_OPERATORS.has(key))
-        throw new Error(`Forbidden operator: ${key}`);
+        throw new AppError(`Forbidden operator: ${key}`, 400);
       result[key] = key === "_id" ? coerceIdField(value) : processObject(value);
     }
     return result;
@@ -176,6 +181,12 @@ async function dropCollection({ userId, projectCode, collectionName }) {
     await db.collection(collectionName).drop();
     return { success: true };
   } catch (error) {
+    // 26 = NamespaceNotFound. Dropping a collection that was never created (or
+    // is already gone) leaves the caller in exactly the state it asked for, so
+    // report success. DELETE /:col surfaces a failed drop as a 500 now that it
+    // awaits this call, and an admin clearing an empty collection must not trip
+    // that.
+    if (error.code === 26) return { success: true };
     return { success: false, error: error.message };
   }
 }
@@ -253,16 +264,17 @@ async function createDocument({ userId, projectCode, collectionName, data }) {
   }
   const collection = db.collection(collectionName);
 
-  try {
-    const result = await collection.insertOne({
-      ...formatQueryObj(sanitizeWriteData(data)),
-      createdAt: new Date(),
-    });
-    return result.insertedId;
-  } catch (error) {
-    Logger.log(error.message, __filename);
-    return null;
-  }
+  // Deliberately NOT wrapped in a try/catch. Swallowing the failure and
+  // returning null made every caller report a success for a document that was
+  // never stored — the /add route answered 200 {_id: null} and emitted a
+  // realtime "add" event for a phantom document. Callers decide how a failed
+  // insert should surface; duplicate-key (11000) in particular is a client
+  // error, not a server fault.
+  const result = await collection.insertOne({
+    ...formatQueryObj(sanitizeWriteData(data)),
+    createdAt: new Date(),
+  });
+  return result.insertedId;
 }
 
 async function getDocument({

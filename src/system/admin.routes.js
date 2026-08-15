@@ -79,7 +79,7 @@ router.post("/projects", async (req, res) => {
   }
 });
 
-router.get("/accounts/:id", async (req, res) => {
+router.get("/accounts/:id", async (req, res, next) => {
   if (!isValidObjectId(req.params.id))
     return res.status(400).json({ message: "id is not valid" });
   try {
@@ -99,12 +99,11 @@ router.get("/accounts/:id", async (req, res) => {
     if (!user) return res.status(404).json({ message: "couldn't find user" });
     return res.status(200).json(user);
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.delete("/accounts/:id", systemApiAuth, async (req, res) => {
+router.delete("/accounts/:id", systemApiAuth, async (req, res, next) => {
   auditLog(req, "admin_delete_account", { targetAccountId: req.params.id });
   if (!isValidObjectId(req.params.id))
     return res.status(400).json({ message: "id is not valid" });
@@ -147,8 +146,7 @@ router.delete("/accounts/:id", systemApiAuth, async (req, res) => {
     });
     return res.status(200).json({ success: true });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
