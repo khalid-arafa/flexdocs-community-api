@@ -34,13 +34,37 @@ function parseSystemOrigins() {
     .filter(Boolean);
 }
 
-// Dynamic CORS: checks origin against project or system allowlist
-const dynamicCors = cors(async (req, callback) => {
-  const origin = req.headers.origin;
-  const opts = { credentials: true, optionsSuccessStatus: 200 };
+// The three answers this middleware can give. They exist as named constants
+// because the dangerous combination is a *pairing*, not a single value:
+// `origin: true` reflects whatever Origin the browser sent, and reflecting an
+// arbitrary origin together with `Access-Control-Allow-Credentials: true` is
+// precisely what CORS exists to prevent — any site could then make credentialed
+// calls to this API with the victim's cookies and read the responses.
+//
+// So a wildcard configuration is served as a REAL public API (`origin: "*"`,
+// no credentials, which is also the only thing browsers accept alongside "*"),
+// while credentials stay available exclusively to explicitly-listed origins.
+const BASE = { optionsSuccessStatus: 200 };
 
-  // non-browser requests (server-to-server, mobile) — always allow
-  if (!origin) return callback(null, { ...opts, origin: true });
+// Origin is on an allowlist (or the request is not a browser's) — reflecting it
+// is safe, so cookie/credentialed calls are permitted.
+const ALLOW_CREDENTIALED = { ...BASE, origin: true, credentials: true };
+
+// Wildcard / unconfigured: readable by anyone, but as an anonymous public API.
+// Callers authenticate with a bearer token in a header, which is unaffected;
+// only cookie-bearing (withCredentials) requests are refused by the browser.
+const ALLOW_PUBLIC = { ...BASE, origin: "*", credentials: false };
+
+const DENY = { ...BASE, origin: false, credentials: false };
+
+// Dynamic CORS: checks origin against project or system allowlist
+async function resolveCorsOptions(req, callback) {
+  const origin = req.headers.origin;
+
+  // non-browser requests (server-to-server, mobile) — always allow. No Origin
+  // means no ACAO header is emitted at all, so the credentialed variant here
+  // grants nothing to a browser; it only keeps the previous behaviour.
+  if (!origin) return callback(null, ALLOW_CREDENTIALED);
 
   const isProduction = process.env.NODE_ENV === "production";
 
@@ -48,26 +72,40 @@ const dynamicCors = cors(async (req, callback) => {
   const match = req.path.match(/^\/projects\/([^/]+)/);
   if (match) {
     const allowedOrigins = await getProjectOrigins(match[1]);
-    if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
-      return callback(null, { ...opts, origin: true });
+    // Explicitly listed beats wildcard: a project that lists "*" AND real
+    // origins still gets credentials for the ones it named.
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, ALLOW_CREDENTIALED);
+    }
+    if (allowedOrigins.includes("*")) {
+      return callback(null, ALLOW_PUBLIC);
     }
     // in development, allow all if project hasn't configured origins yet
     if (!isProduction && allowedOrigins.length === 0) {
-      return callback(null, { ...opts, origin: true });
+      return callback(null, ALLOW_PUBLIC);
     }
-    return callback(null, { ...opts, origin: false });
+    return callback(null, DENY);
   }
 
   // system/admin routes: check ALLOWED_ORIGINS env
   const systemOrigins = parseSystemOrigins();
-  if (systemOrigins.includes("*") || systemOrigins.includes(origin)) {
-    return callback(null, { ...opts, origin: true });
+  if (systemOrigins.includes(origin)) {
+    return callback(null, ALLOW_CREDENTIALED);
   }
-  // in development, allow all if ALLOWED_ORIGINS is not set
+  if (systemOrigins.includes("*")) {
+    return callback(null, ALLOW_PUBLIC);
+  }
+  // In development, allow all if ALLOWED_ORIGINS is not set — still without
+  // credentials. The dashboard authenticates with cookies and IS cross-origin,
+  // so a dev setup that relies on that must list its origin in ALLOWED_ORIGINS
+  // (setup.sh already writes one); "unset" is a convenience for public reads,
+  // not a session-bearing configuration.
   if (!isProduction && systemOrigins.length === 0) {
-    return callback(null, { ...opts, origin: true });
+    return callback(null, ALLOW_PUBLIC);
   }
-  return callback(null, { ...opts, origin: false });
-});
+  return callback(null, DENY);
+}
 
-module.exports = { dynamicCors, parseSystemOrigins };
+const dynamicCors = cors(resolveCorsOptions);
+
+module.exports = { dynamicCors, parseSystemOrigins, resolveCorsOptions };

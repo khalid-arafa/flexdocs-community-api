@@ -84,7 +84,7 @@ router.post("/", zodValidate(createProjectSchema), async (req, res) => {
 });
 
 // check code if available
-router.get("/check-code/:code", async (req, res) => {
+router.get("/check-code/:code", async (req, res, next) => {
   try {
     const { code } = req.params;
     const exists = await countDocuments({
@@ -95,8 +95,7 @@ router.get("/check-code/:code", async (req, res) => {
     });
     return res.status(200).json({ success: exists == 0 });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
@@ -126,7 +125,7 @@ function requireProjectOwner(req, res, next) {
   return res.status(404).json({ message: "Project was not found!" });
 }
 
-router.post("/:projectCode", projectApiAuth, async (req, res) => {
+router.post("/:projectCode", projectApiAuth, async (req, res, next) => {
   const { select } = req.body;
   try {
     const project = await getDocument({
@@ -140,8 +139,7 @@ router.post("/:projectCode", projectApiAuth, async (req, res) => {
       return res.status(404).json({ message: "Couldn't find your project!" });
     return res.status(200).json(project);
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
@@ -197,7 +195,7 @@ const PROJECT_UPDATABLE_FIELDS = [
   "authTokenExpiry",
 ];
 
-router.put("/:projectCode", projectApiAuth, async (req, res) => {
+router.put("/:projectCode", projectApiAuth, async (req, res, next) => {
   try {
     const query = req.byAdmin
       ? { code: req.params.projectCode }
@@ -246,8 +244,7 @@ router.put("/:projectCode", projectApiAuth, async (req, res) => {
     invalidateProjectCache(req.params.projectCode);
     return res.status(200).json({ success: result.matchedCount > 0 });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 

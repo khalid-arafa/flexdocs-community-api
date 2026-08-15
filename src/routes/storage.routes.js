@@ -60,6 +60,20 @@ const Logger = require("../utils/logger");
 // Resolved absolute base for all uploads — used to prevent path traversal.
 const UPLOADS_BASE = path.resolve(process.cwd(), uploadsPath);
 
+// Storage rules are default-DENY (core/db_rules_service `_evaluateRule`): a
+// path with no rule defined is rejected, so a project that has authored no
+// storage rules at all denies every non-admin storage operation. Mirrors the
+// same helper in sockets/storage.sockets.js — a project with an empty rule set
+// is a configuration gap, and a bare "denied" sends operators hunting through
+// rules that do not exist, so that case gets its own message.
+function hasStorageRules(storageRules) {
+  return Boolean(storageRules) && Object.keys(storageRules).length > 0;
+}
+
+const NO_STORAGE_RULES_DOWNLOAD_MESSAGE =
+  "Access denied: no storage rules are defined for this project. " +
+  'Define a "/files" storage rule (for example {"/files": {"read": true}}) to allow private file downloads.';
+
 // get bucket content
 router.get("/buckets/:bucketId/content", storageGuard("read", "files"), async (req, res) => {
   const { bucketId } = req.params;
@@ -315,36 +329,44 @@ router.get("/:fileId/:filename", async (req, res, next) => {
         if (!decoded || decoded.expired || decoded.project !== req.project.code)
           return res.status(403).json({ message: "Invalid or expired token!" });
 
-        // If the project defines a storage rule covering file reads, enforce it on
-        // the download too (per-file access control), so a project isn't limited to
-        // "any logged-in user can read any private file". When no files read-rule is
-        // defined, the valid-project-token check above remains the gate (backward
-        // compatible). Admins bypass (handled by the outer !req.isDbAdmin).
+        // Enforce the project's storage rules on the download too (per-file
+        // access control), so a project isn't limited to "any logged-in user
+        // can read any private file". The check is UNCONDITIONAL and
+        // default-DENY: a project that defines no rule covering file reads
+        // denies the read rather than falling back to the valid-project-token
+        // check. That matches storageGuard on the other REST routes and the
+        // socket upload path — previously this route allowed the download and
+        // the upload path denied it, so the two disagreed on the same rule set.
+        // Admins bypass (handled by the outer !req.isDbAdmin).
         const sr = req.project.storageRules || {};
-        const fileRuleDefined =
-          Object.prototype.hasOwnProperty.call(sr, "/files") ||
-          Object.prototype.hasOwnProperty.call(sr, "/files/[id]") ||
-          (file._id && Object.prototype.hasOwnProperty.call(sr, `/files/${file._id}`));
-        if (fileRuleDefined) {
-          let user = null;
-          if (decoded.userId) {
-            user = await getDocument({
-              userId: req.project.userId,
-              projectCode: req.project.code,
-              collectionName: authCollectionName,
-              query: { _id: decoded.userId },
-              select: { password: 0, resetPasswordToken: 0 },
-            });
-          }
-          const allowed = await checkStorageRule({
-            storageRules: sr,
-            action: "read",
-            resource: "files",
-            user,
-            doc: file,
+        let user = null;
+        if (decoded.userId) {
+          user = await getDocument({
+            userId: req.project.userId,
+            projectCode: req.project.code,
+            collectionName: authCollectionName,
+            query: { _id: decoded.userId },
+            select: { password: 0, resetPasswordToken: 0 },
           });
-          if (!allowed)
-            return res.status(403).json({ message: "Access denied by storage rules." });
+        }
+        const allowed = await checkStorageRule({
+          storageRules: sr,
+          action: "read",
+          resource: "files",
+          user,
+          doc: file,
+        });
+        if (!allowed) {
+          if (!hasStorageRules(sr)) {
+            Logger.warn(
+              "Download denied: no storage rules are defined for the project",
+              { projectCode: req.project.code, fileId: String(file._id) },
+            );
+            return res
+              .status(403)
+              .json({ message: NO_STORAGE_RULES_DOWNLOAD_MESSAGE });
+          }
+          return res.status(403).json({ message: "Access denied by storage rules." });
         }
       }
     }

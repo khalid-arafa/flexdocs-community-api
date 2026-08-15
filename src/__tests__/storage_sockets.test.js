@@ -228,9 +228,12 @@ describe("upload:start", () => {
     expect(emitted(socket, "upload:error").message).toMatch(/File size must not exceed/);
   });
 
+  // The project must actually define rules here: a project with NO rules at
+  // all is now reported as a configuration gap with its own message (covered
+  // in storage_fixes.test.js), not as a rule saying no.
   it("rejects an upload the project's storage rules deny", async () => {
     checkStorageRule.mockResolvedValue(false);
-    const socket = connectSocket();
+    const socket = connectSocket({ storageRules: { "/files": { add: false } } });
     await socket.handlers["upload:start"]({ name: "photo.jpg" });
     expect(emitted(socket, "upload:error").message).toBe("Upload denied by storage rules");
     expect(socket.activeUploads["photo.jpg"]).toBeUndefined();

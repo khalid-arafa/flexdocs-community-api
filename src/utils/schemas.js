@@ -168,6 +168,23 @@ const queryDocumentsSchema = z.object({
   paginate: z.literal("cursor").optional(),
 });
 
+// POST /:col/add. FlexDocs is a schemaless document store, so a document's
+// SHAPE is deliberately wide open: any field name, any JSON value, nested
+// however the caller likes. In particular `_id: { $oid: "..." }` must keep
+// working — the `$oid`/`$date` coercion markers (formatQueryObj in
+// db_service.js) are how a caller picks its own document id, which the blog
+// upload and analytics seed scripts rely on.
+//
+// So this pins down only what a document can never be: a non-object body (an
+// array, a string, null) and an empty one — an insert with no fields stores
+// nothing but a createdAt stamp and is always a client bug.
+//
+// Operator and reserved keys are NOT checked here on purpose: sanitizeWriteData
+// strips them on the way to Mongo and is the single place that logic lives.
+const addDocumentSchema = z
+  .record(z.string(), z.unknown())
+  .refine((doc) => Object.keys(doc).length > 0, "Document cannot be empty");
+
 const listCollectionsSchema = z.object({
   where: z.record(z.string(), z.unknown()).optional(),
   page: z.number().int().min(1).optional(),
@@ -272,6 +289,7 @@ module.exports = {
   dbChangePasswordSchema,
   // db
   queryDocumentsSchema,
+  addDocumentSchema,
   listCollectionsSchema,
   createCollectionSchema,
   renameCollectionSchema,

@@ -6,6 +6,7 @@ const {
   systemProjectCollectionName,
 } = require("../constants");
 const { getDocument } = require("../core/db_service");
+const { ProjectDocCache } = require("../core/project_doc_cache");
 const { hashProjectToken } = require("../utils/helper");
 
 // ── Per-request project document cache ──────────────────────────────────────
@@ -16,25 +17,17 @@ const { hashProjectToken } = require("../utils/helper");
 // dominant per-request cost, so the fetched document is cached in memory
 // here, keyed by project code.
 //
-// Invalidation is primarily EXPLICIT, not time-based: every write site in
-// system/projects.routes.js calls invalidateProjectCache(code) right after
-// the write, so an admin's change is visible on their very next request. The
-// TTL below exists only as a backstop for a write path we missed (or one
-// added later that nobody wired up) — it is deliberately short so a
-// forgotten invalidation call degrades into "stale for at most 30s", not
-// "stale forever".
+// The TTL backstop, the explicit-invalidation stamp and the bound all live in
+// core/project_doc_cache.js, shared with the change-stream driver. Only the
+// two settings that genuinely differ between the two callers are set here:
+// misses are never memoised (a project created moments ago must be usable on
+// the very next request), and every document handed to a request is cloned.
 const PROJECT_CACHE_TTL_MS = 30 * 1000;
-const projectCache = new Map(); // code -> { doc, expiresAt }
-
-// Closes a narrow TOCTOU window: a request that reads the project doc from
-// Mongo just before a credential rotation commits, then tries to populate the
-// cache just AFTER invalidateProjectCache already ran for that write, would
-// otherwise overwrite the fresh (empty) cache slot with what it fetched —
-// serving stale credentials for up to PROJECT_CACHE_TTL_MS. Bumped on every
-// invalidation, checked before every populate: if the generation moved while
-// a fetch was in flight, that fetch's result is used for this request only
-// and never cached, so the next request re-fetches instead of trusting it.
-const projectCacheGeneration = new Map(); // code -> generation number
+const projectCache = new ProjectDocCache({
+  ttlMs: PROJECT_CACHE_TTL_MS,
+  cacheMisses: false,
+  clone: cloneProjectDoc,
+});
 
 // A deep-enough clone: rebuilds every plain object/array level so a
 // downstream handler that does `req.project.someField = x`, or mutates an
@@ -58,8 +51,7 @@ function cloneProjectDoc(value) {
 // updating it in place — means the next request always re-fetches from Mongo
 // instead of risking a second stale copy being cached from a racing request.
 function invalidateProjectCache(code) {
-  projectCache.delete(code);
-  projectCacheGeneration.set(code, (projectCacheGeneration.get(code) || 0) + 1);
+  projectCache.invalidate(code);
   // The change-stream driver runs outside the request cycle and so keeps its
   // own copy of the project document, including realtimeChangeStreams. Clear
   // that too, or toggling the flag would not take effect until its TTL lapsed.
@@ -119,41 +111,30 @@ async function projectApiAuth(req, res, next) {
     return;
   }
 
-  const cached = projectCache.get(req.params.projectCode);
+  // The cache clones on the way out, on a hit and on a fresh fetch alike, so
+  // req.project is never the object the cache itself holds — a handler that
+  // mutates it (see the clone comment above) cannot corrupt what the next
+  // request reads back.
+  //
+  // Wrapped because Express 4 does not forward a rejected async middleware:
+  // an unreachable Mongo here used to leave the request hanging with no
+  // response at all and surface only as an unhandledRejection. Handing it to
+  // next() routes it through the centralized error handler like any other
+  // failure, which is also what keeps a DB blip from being fatal when
+  // EXIT_ON_UNHANDLED_REJECTION is switched on (see index.js).
   let project;
-  if (cached && cached.expiresAt > Date.now()) {
-    project = cloneProjectDoc(cached.doc);
-  } else {
-    if (cached) projectCache.delete(req.params.projectCode); // expired backstop entry
-
-    const generationAtFetchStart = projectCacheGeneration.get(req.params.projectCode) || 0;
-    project = await getDocument({
-      userId: systemDatabaseName,
-      projectCode: systemProjectCode,
-      collectionName: systemProjectCollectionName,
-      query: { code: req.params.projectCode },
-      select,
-    });
-
-    // Only successful lookups are cached — a "not found" is never memoised,
-    // so a project created moments ago is visible immediately rather than
-    // waiting out a negative-cache TTL.
-    if (project) {
-      // Skip the populate if a write invalidated this project code while the
-      // fetch above was in flight — see the TOCTOU comment on
-      // projectCacheGeneration. This request still uses what it fetched.
-      const generationNow = projectCacheGeneration.get(req.params.projectCode) || 0;
-      if (generationNow === generationAtFetchStart) {
-        projectCache.set(req.params.projectCode, {
-          doc: project,
-          expiresAt: Date.now() + PROJECT_CACHE_TTL_MS,
-        });
-      }
-      // req.project must never be the SAME object stored in the cache entry
-      // above, or this very request mutating it (see the clone comment) would
-      // corrupt the cached copy before a second request ever reads it back.
-      project = cloneProjectDoc(project);
-    }
+  try {
+    project = await projectCache.getOrFetch(req.params.projectCode, () =>
+      getDocument({
+        userId: systemDatabaseName,
+        projectCode: systemProjectCode,
+        collectionName: systemProjectCollectionName,
+        query: { code: req.params.projectCode },
+        select,
+      }),
+    );
+  } catch (error) {
+    return next(error);
   }
 
   if (!project) {

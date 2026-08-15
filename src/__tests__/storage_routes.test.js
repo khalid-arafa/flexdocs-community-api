@@ -201,17 +201,21 @@ describe("Storage Routes", () => {
       expect(res.status).toBe(403);
     });
 
-    it("should serve a private file when the token is valid for this project", async () => {
+    // A valid project token is necessary but no longer sufficient: storage
+    // rules are now enforced unconditionally on this route (default-deny), so
+    // the project must also allow the read.
+    it("should serve a private file when the token is valid and storage rules allow", async () => {
       getStorageFile.mockResolvedValue({
+        _id: VALID_FILE_ID,
         name: "photo",
         ext: "jpg",
         dir: "data/storage/testproject/abc123",
         isPublic: false,
       });
       verifyToken.mockReturnValue({ project: "testproject" });
-      const res = await request(createApp()).get(
-        `/${VALID_FILE_ID}/photo.jpg?token=validtoken`
-      );
+      const res = await request(
+        createApp({ storageRules: { "/files": { read: true } } })
+      ).get(`/${VALID_FILE_ID}/photo.jpg?token=validtoken`);
       expect(res.status).toBe(200);
     });
 
@@ -537,13 +541,29 @@ describe("Storage Routes", () => {
       expect(res.status).toBe(200);
     });
 
-    it("stays backward-compatible (valid token, no rule defined → allowed)", async () => {
+    // Was: "stays backward-compatible (valid token, no rule defined →
+    // allowed)". The route now defaults to DENY like every other storage path
+    // (storageGuard, and the socket upload handler), so a valid project token
+    // alone no longer opens a private file. The denial names the missing
+    // configuration so an operator can act on it.
+    it("denies a valid token when the project defines no storage rules at all", async () => {
       getStorageFile.mockResolvedValue(privateFile);
       verifyToken.mockReturnValue({ project: "testproject" });
       const res = await request(createApp()).get(
         `/${VALID_FILE_ID}/secret.pdf?token=usertok`
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
+      expect(res.body.message).toMatch(/no storage rules are defined/i);
+    });
+
+    it("denies with the generic message when rules exist but none cover files", async () => {
+      getStorageFile.mockResolvedValue(privateFile);
+      verifyToken.mockReturnValue({ project: "testproject" });
+      const res = await request(
+        createApp({ storageRules: { "/buckets": true } })
+      ).get(`/${VALID_FILE_ID}/secret.pdf?token=usertok`);
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe("Access denied by storage rules.");
     });
   });
 

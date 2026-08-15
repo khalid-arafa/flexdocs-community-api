@@ -7,12 +7,13 @@
 // stored hash and never decodes the JWT). That split broke realtime and file
 // uploads only, with no error surfaced to the client.
 //
-// #3: the hash check runs for every token, but only an EXPIRED one is rejected
-// for failing it. Enforcing on unexpired tokens took production uploads down —
+// #3: the hash check runs for every token and a failure is now fatal for
+// unexpired tokens too, matching REST (which re-hashes on every request). It
+// was warn-only for a while because enforcing it took production uploads down —
 // a live site was running on a token absent from its project's credential list
-// and had been fine for as long as it stayed unexpired. So an unexpired
-// mismatch warns (naming the presented hash) and is allowed, unless
-// ENFORCE_SOCKET_PROJECT_CREDENTIAL=true.
+// and had been fine for as long as it stayed unexpired — so the old
+// warn-and-allow behaviour survives as an opt-OUT,
+// ENFORCE_SOCKET_PROJECT_CREDENTIAL=false. Both paths log the presented hash.
 
 jest.mock("../utils/logger", () => ({
   log: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
@@ -66,21 +67,27 @@ describe("socketAuth project-token binding", () => {
   });
 });
 
-// An unexpired token that is not in the credential list is reported, not
-// refused — see the header note. An expired one is still refused.
+// An unexpired token that is not in the credential list is refused by default
+// and only allowed under the explicit opt-out — see the header note.
 describe("socketAuth credential check on unexpired tokens", () => {
   const Logger = require("../utils/logger");
   const ENV = process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // The default under test is "flag absent", so don't inherit the operator's
+    // shell value.
+    delete process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
+  });
   afterEach(() => {
     if (ENV === undefined) delete process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
     else process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = ENV;
   });
 
-  // The production regression, pinned: this exact case took uploads down when
-  // it rejected, with no error the client could see.
-  it("ALLOWS an unexpired token whose credential is missing, and warns", async () => {
+  // The production regression, pinned: rejecting this exact case took uploads
+  // down with nothing visible to the client, so the default stays permissive
+  // and the warning is what an operator acts on.
+  it("ALLOWS an unexpired token whose credential is missing, by default", async () => {
     verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
     getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
     const socket = socketWith("not-registered");
@@ -89,15 +96,65 @@ describe("socketAuth credential check on unexpired tokens", () => {
 
     expect(next).toHaveBeenCalledWith(); // no error
     expect(socket.project.code).toBe("myproj");
+  });
+
+  // The rejection is invisible to the client (socket.io buffers the emit), so
+  // the log is the only diagnosis an operator gets. It must name the project
+  // and the hash presented.
+  it("logs a diagnosable warning naming the project and presented hash", async () => {
+    verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+    await socketAuth(socketWith("not-registered"), jest.fn());
+
     expect(Logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("not a registered credential"),
       expect.objectContaining({ project: "myproj", presentedHash: expect.any(String) }),
     );
+    const [message] = Logger.warn.mock.calls[0];
+    expect(message).toContain("ENFORCE_SOCKET_PROJECT_CREDENTIAL=true");
   });
 
-  // The warning has to name the hash actually presented, or it cannot be
-  // matched against the credential list to find the mismatch.
-  it("logs the presented hash alongside the stored ones", async () => {
+  // Enforcement is opt-IN: an operator who has reconciled the credential list
+  // turns it on, and only then does the same handshake fail.
+  it("REJECTS it once an operator opts in with =true", async () => {
+    process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = "true";
+    verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+    const socket = socketWith("not-registered");
+    const next = jest.fn();
+    await socketAuth(socket, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+    expect(socket.project).toBeUndefined();
+    expect(Logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Socket rejected"),
+      expect.objectContaining({ project: "myproj", presentedHash: expect.any(String) }),
+    );
+  });
+
+  // Only the exact string enforces. Guessing wrong here costs a silent
+  // outage, so anything ambiguous — a typo, a blank, a truthy-looking value —
+  // must fall back to allowing.
+  it.each(["false", "TRUE", "", "0", "no", "False", "1", "yes"])(
+    "keeps allowing when the flag is %p (only \"true\" enforces)",
+    async (value) => {
+      process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = value;
+      verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
+      getDocument.mockResolvedValue(projectWithCredential("registered"));
+      const next = jest.fn();
+      await socketAuth(socketWith("not-registered"), next);
+      expect(next).toHaveBeenCalledWith(); // no error
+    },
+  );
+
+  // The log has to name the hash actually presented, or it cannot be matched
+  // against the credential list to find the mismatch. True on both paths.
+  it.each([
+    ["allowing by default", undefined],
+    ["rejecting under the opt-in", "true"],
+  ])("logs the presented hash alongside the stored ones when %s", async (_label, flag) => {
+    if (flag === undefined) delete process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL;
+    else process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = flag;
     verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
     getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
     await socketAuth(socketWith("not-registered"), jest.fn());
@@ -107,13 +164,16 @@ describe("socketAuth credential check on unexpired tokens", () => {
     expect(meta.storedHashes).toEqual([hashProjectToken("the-registered-token")]);
   });
 
-  it("rejects it once an operator opts in", async () => {
-    process.env.ENFORCE_SOCKET_PROJECT_CREDENTIAL = "true";
-    verifyToken.mockReturnValue({ projectId: "id", name: "n", code: "myproj" });
-    getDocument.mockResolvedValue(projectWithCredential("the-registered-token"));
+  // `_system` is synthesised, not read from Mongo, so it has no credential
+  // list to match — enforcement must not lock it out. (Its expiry check, which
+  // IS its revocation signal, is covered further down.)
+  it("exempts an unexpired `_system` token from the credential check", async () => {
+    verifyToken.mockReturnValue({ code: "_system" });
+    const socket = socketWith("system-token");
     const next = jest.fn();
-    await socketAuth(socketWith("not-registered"), next);
-    expect(next).toHaveBeenCalledWith(expect.any(Error));
+    await socketAuth(socket, next);
+    expect(next).toHaveBeenCalledWith();
+    expect(socket.project.code).toBe("_system");
   });
 
   it("allows an unexpired token on a project with no credentials at all", async () => {
@@ -123,7 +183,7 @@ describe("socketAuth credential check on unexpired tokens", () => {
     });
     const next = jest.fn();
     await socketAuth(socketWith("orphaned"), next);
-    expect(next).toHaveBeenCalledWith();
+    expect(next).toHaveBeenCalledWith(); // no error
   });
 
   // Unchanged and still enforced: an expired token has nothing else vouching

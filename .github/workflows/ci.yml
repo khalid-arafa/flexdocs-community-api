@@ -32,3 +32,48 @@ jobs:
           MONGODB_URI: mongodb://localhost:27017/ci-test
           JWT_SECRET: ci-test-jwt-secret
           ENCRYPTION_KEY: ci-test-encryption-key
+
+  # The unit job above mocks the data layer everywhere, so nothing in it is
+  # ever checked against MongoDB's real semantics. This job runs the suite in
+  # src/__tests__/integration against an actual mongod.
+  integration:
+    runs-on: ubuntu-latest
+
+    # A service container is used in preference to mongodb-memory-server's
+    # binary download: it is faster, pinned to a known server version, and it
+    # needs no network access from the test process itself. The harness
+    # (src/__tests__/helpers/mongo_test_server.js) still falls back to
+    # mongodb-memory-server, then Docker, then a local mongod, for developers
+    # running `npm run test:integration` on their own machine — and SKIPS the
+    # whole suite with an explanation if none of those work, so this job never
+    # fails merely because a database could not be provisioned.
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run test:integration
+        env:
+          # Consumed by the harness's first strategy, so no mongod binary is
+          # downloaded. The suite passes against both a standalone server (as
+          # here) and a replica set.
+          MONGODB_TEST_URI: mongodb://127.0.0.1:27017/?directConnection=true
+          JWT_SECRET: ci-test-jwt-secret
+          ENCRYPTION_KEY: ci-test-encryption-key
+          LOG_LEVEL: silent

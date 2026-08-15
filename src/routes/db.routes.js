@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { ObjectId } = require("mongodb");
-const Logger = require("../utils/logger");
+const { AppError } = require("../utils/app_error");
 
 const {
   getManyDocuments,
@@ -39,14 +39,23 @@ const {
   renameCollectionSchema,
   createIndexSchema,
   queryDocumentsSchema,
+  addDocumentSchema,
   updateManySchema,
   deleteManySchema,
 } = require("../utils/schemas");
 
+// Every 500-class failure below is handed to the central error handler
+// (middleware/error_handler.middleware.js) instead of being answered inline.
+// It logs the real message + stack with the request id/method/url and replies
+// with a generic "Internal server error", so a Mongo error string — which can
+// carry collection names, index definitions and connection details — never
+// reaches the client. Deliberate 4xx messages are still returned inline: they
+// ARE the answer to the caller, and the handler leaves non-500 messages intact.
+
 // Listing every collection (names + counts) is schema introspection — an
 // admin/dashboard operation. Gate it behind the DB admin like rename/drop;
 // otherwise a public project leaks its full schema to anonymous callers.
-router.post("/collections", zodValidate(listCollectionsSchema), async (req, res) => {
+router.post("/collections", zodValidate(listCollectionsSchema), async (req, res, next) => {
   if (!req.isDbAdmin)
     return res.status(403).json({ message: "Access denied" });
   let { where, page, limit } = req.body;
@@ -69,15 +78,14 @@ router.post("/collections", zodValidate(listCollectionsSchema), async (req, res)
       totalCount: result.totalCount,
     });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
 // Explicit collection creation is an admin/dashboard operation (the data plane
 // auto-creates collections on first insert under DB rules). Gate it behind the
 // DB admin so anonymous callers on a public project can't spam collections.
-router.post("/collections/new", zodValidate(createCollectionSchema), async (req, res) => {
+router.post("/collections/new", zodValidate(createCollectionSchema), async (req, res, next) => {
   if (!req.isDbAdmin)
     return res.status(403).json({ message: "Access denied" });
   let { name } = req.body;
@@ -99,12 +107,11 @@ router.post("/collections/new", zodValidate(createCollectionSchema), async (req,
     }
     return res.status(400).json({ message: result.error });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
-router.put("/collections/:col/rename", zodValidate(renameCollectionSchema), async (req, res) => {
+router.put("/collections/:col/rename", zodValidate(renameCollectionSchema), async (req, res, next) => {
   if (!req.isDbAdmin)
     return res.status(403).json({ message: "Access denied" });
   const oldName = req.params.col;
@@ -132,8 +139,7 @@ router.put("/collections/:col/rename", zodValidate(renameCollectionSchema), asyn
 
     return res.status(200).json({ success: true });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
@@ -145,7 +151,7 @@ router.get("/:col", collectionMiddleware, (req, res) =>
     message: "Use post method with body params to get documents",
   }),
 );
-router.post("/:col", collectionMiddleware, zodValidate(queryDocumentsSchema), async (req, res) => {
+router.post("/:col", collectionMiddleware, zodValidate(queryDocumentsSchema), async (req, res, next) => {
   let { query, sort, select, limit, page, skip, cursor, paginate } = req.body;
   if (!page) page = pagination.defaultPage;
   if (!limit) limit = 100;
@@ -212,12 +218,11 @@ router.post("/:col", collectionMiddleware, zodValidate(queryDocumentsSchema), as
       nextCursor,
     });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 // get documents filters
-router.get("/:col/filters", collectionMiddleware, async (req, res) => {
+router.get("/:col/filters", collectionMiddleware, async (req, res, next) => {
   try {
     const samples = await getManyDocuments({
       userId: req.project.userId,
@@ -232,12 +237,17 @@ router.get("/:col/filters", collectionMiddleware, async (req, res) => {
 
     return res.status(200).json({ fields: Array.from(fields) });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
+// MongoDB's duplicate-key error. Reachable here because a caller may choose its
+// own `_id` (via the `$oid` marker) and because a collection may carry unique
+// indexes — both make this the caller's problem, not a server fault.
+const DUPLICATE_KEY_ERROR = 11000;
+
 // add document to a collection
-router.post("/:col/add", collectionMiddleware, async (req, res) => {
+router.post("/:col/add", collectionMiddleware, zodValidate(addDocumentSchema), async (req, res, next) => {
   try {
     const collectionResults = await getCollectionsList({
       userId: req.project.userId,
@@ -245,6 +255,8 @@ router.post("/:col/add", collectionMiddleware, async (req, res) => {
       where: { name: req.params.col },
       limit: 1,
     });
+    // Throws on a failed insert, so every realtime event below is reached only
+    // once the document is genuinely persisted.
     const _id = await createDocument({
       userId: req.project.userId,
       projectCode: req.project.code,
@@ -279,13 +291,19 @@ router.post("/:col/add", collectionMiddleware, async (req, res) => {
 
     return res.status(200).json({ _id });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    if (error.code === DUPLICATE_KEY_ERROR)
+      return next(
+        new AppError(
+          "A document with this _id or unique field already exists",
+          409,
+        ),
+      );
+    return next(error);
   }
 });
 
 // update documents by body params
-router.put("/:col", bulkMiddleware, zodValidate(updateManySchema), async (req, res) => {
+router.put("/:col", bulkMiddleware, zodValidate(updateManySchema), async (req, res, next) => {
   const { filter, newData } = req.body;
   try {
     const query = await updateManyDocuments(
@@ -302,13 +320,12 @@ router.put("/:col", bulkMiddleware, zodValidate(updateManySchema), async (req, r
       result = { code: 200, message: "Documents were updated successfully" };
     return res.status(result.code).json({ message: result.message });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
 // delete documents by body params
-router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req, res) => {
+router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req, res, next) => {
   const { filter } = req.body;
   if (!filter && !req.isDbAdmin)
     return res.status(400).json({ message: "filter is required!" });
@@ -324,11 +341,16 @@ router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req
       result = { code: 200, message: "Documents were deleted successfully" };
     }
     if (req.isDbAdmin && !filter) {
-      dropCollection({
+      // Awaited: unawaited, a rejected drop became an unhandled rejection and
+      // the caller was told the collection was gone while it was still there
+      // (and the "delete" event below announced it to every watcher).
+      const dropped = await dropCollection({
         userId: req.project.userId,
         projectCode: req.project.code,
         collectionName: req.params.col,
       });
+      if (!dropped.success)
+        return next(new AppError(dropped.error, 500));
       sendUpdateCollectionStreamEvent({
         colPath: `${req.project.code}/collections`,
         action: "delete",
@@ -341,8 +363,7 @@ router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req
     }
     return res.status(result.code).json({ message: result.message });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
@@ -351,7 +372,7 @@ router.delete("/:col", bulkMiddleware, zodValidate(deleteManySchema), async (req
 // step (snapshot what auto-indexing already created) before opting a project
 // into project.manualIndexes. Same admin gate as /collections and
 // rename/drop above — schema introspection/mutation, not end-user data.
-router.get("/:col/indexes", async (req, res) => {
+router.get("/:col/indexes", async (req, res, next) => {
   if (!req.isDbAdmin) return res.status(403).json({ message: "Access denied" });
   if (!validateCollectionParam(req, res)) return;
   const result = await listIndexes({
@@ -359,7 +380,7 @@ router.get("/:col/indexes", async (req, res) => {
     projectCode: req.project.code,
     collectionName: req.params.col,
   });
-  if (!result.success) return res.status(500).json({ message: result.error });
+  if (!result.success) return next(new AppError(result.error, 500));
   return res.status(200).json({ indexes: result.indexes });
 });
 
@@ -392,7 +413,7 @@ router.delete("/:col/indexes/:name", async (req, res) => {
 });
 
 // get document by id
-router.get("/:col/:id", documentMiddleware, async (req, res) => {
+router.get("/:col/:id", documentMiddleware, async (req, res, next) => {
   const { col, id } = req.params;
   if (!ObjectId.isValid(id))
     return res.status(400).json({ message: "id is not valid" });
@@ -411,13 +432,12 @@ router.get("/:col/:id", documentMiddleware, async (req, res) => {
     if (!doc) return res.status(404).json({ message: "Doc not found!" });
     return res.status(200).json(doc);
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
 // update document
-router.put("/:col/:id", documentMiddleware, async (req, res) => {
+router.put("/:col/:id", documentMiddleware, async (req, res, next) => {
   const { col, id } = req.params;
   if (!ObjectId.isValid(id))
     return res.status(400).json({ message: "id is not valid" });
@@ -458,13 +478,12 @@ router.put("/:col/:id", documentMiddleware, async (req, res) => {
 
     return res.status(result.code).json({ message: result.message });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
 // delete document
-router.delete("/:col/:id", documentMiddleware, async (req, res) => {
+router.delete("/:col/:id", documentMiddleware, async (req, res, next) => {
   const { col, id } = req.params;
   if (!ObjectId.isValid(id))
     return res.status(400).json({ message: "id is not valid" });
@@ -514,8 +533,7 @@ router.delete("/:col/:id", documentMiddleware, async (req, res) => {
 
     return res.status(result.code).json({ message: result.message });
   } catch (error) {
-    Logger.error(error.message, { stack: error.stack });
-    return res.status(500).json({ message: error.message });
+    return next(error);
   }
 });
 
