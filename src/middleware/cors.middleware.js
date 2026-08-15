@@ -77,6 +77,23 @@ async function resolveCorsOptions(req, callback) {
     if (allowedOrigins.includes(origin)) {
       return callback(null, ALLOW_CREDENTIALED);
     }
+    // The operator's OWN origins (ALLOWED_ORIGINS) are first-party and count
+    // on every route, including project ones. The dashboard is served from one
+    // of them and calls /projects/:code/... with its session cookie, so
+    // without this a project that lists "*" silently downgrades the dashboard
+    // to an anonymous public caller: the browser refuses `Allow-Origin: *`
+    // alongside credentials, and the storage/database panels fail with
+    // "blocked by CORS policy" and render as empty. There is no allowed-origins
+    // field in the dashboard UI either, so an operator hitting this has no way
+    // to fix it short of editing the database by hand.
+    //
+    // This grants nothing a wildcard reflection would: these origins are named
+    // explicitly in the operator's own env, never reflected from the request.
+    // A literal "*" in ALLOWED_ORIGINS cannot match a real Origin header, so
+    // it stays a public-API configuration rather than a credentialed one.
+    if (parseSystemOrigins().includes(origin)) {
+      return callback(null, ALLOW_CREDENTIALED);
+    }
     if (allowedOrigins.includes("*")) {
       return callback(null, ALLOW_PUBLIC);
     }

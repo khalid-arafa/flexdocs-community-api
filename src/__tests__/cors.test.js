@@ -150,3 +150,47 @@ describe("non-browser requests", () => {
     expect(headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
+
+// Regression: the dashboard calls /projects/:code/... with its session cookie.
+// A project listing "*" used to answer `Allow-Origin: *`, which the browser
+// refuses alongside credentials — the storage and database panels then render
+// as empty with "blocked by CORS policy". Production hit exactly this, and
+// there is no allowed-origins field in the dashboard UI to fix it with.
+describe("the operator's own origins on project routes", () => {
+  const DASHBOARD = "https://admin.example.com";
+
+  it("grants credentials even when the project lists only '*'", async () => {
+    process.env.ALLOWED_ORIGINS = DASHBOARD;
+    const opts = await optionsFor(
+      req({ origin: DASHBOARD, path: projectPath(["*"]) }),
+    );
+    expect(opts.credentials).toBe(true);
+    expect(opts.origin).not.toBe("*");
+  });
+
+  it("still serves an unlisted third-party origin as an anonymous public API", async () => {
+    process.env.ALLOWED_ORIGINS = DASHBOARD;
+    const opts = await optionsFor(
+      req({ origin: "https://somewhere-else.example", path: projectPath(["*"]) }),
+    );
+    expect(opts.credentials).toBe(false);
+    expect(opts.origin).toBe("*");
+  });
+
+  it("a literal '*' in ALLOWED_ORIGINS never grants credentials", async () => {
+    process.env.ALLOWED_ORIGINS = "*";
+    const opts = await optionsFor(
+      req({ origin: "https://anything.example", path: projectPath(["*"]) }),
+    );
+    expect(opts.credentials).toBe(false);
+  });
+
+  it("does not rescue an origin the project denies outright", async () => {
+    process.env.ALLOWED_ORIGINS = DASHBOARD;
+    process.env.NODE_ENV = "production";
+    const opts = await optionsFor(
+      req({ origin: "https://evil.example", path: projectPath(["https://site.example"]) }),
+    );
+    expect(opts.origin).toBe(false);
+  });
+});
