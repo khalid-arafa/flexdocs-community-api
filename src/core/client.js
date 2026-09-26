@@ -4,7 +4,7 @@ const Logger = require("../utils/logger");
 require("dotenv").config();
 
 const clientOptions = {
-  maxPoolSize: 100,
+  maxPoolSize: 30,
   minPoolSize: 10,
   maxIdleTimeMS: 30000,
   connectTimeoutMS: 10000,
